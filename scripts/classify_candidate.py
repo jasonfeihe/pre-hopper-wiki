@@ -101,9 +101,12 @@ def _token_arch_map(policy: dict) -> dict[str, str]:
 # A capability-guard marker ("not supported", "fall back", "requires sm", ...)
 # guards the architecture it grammatically governs. Attribution is scoped to the
 # marker's own HARD SEGMENT (split on '.', ';', newline — NOT comma):
-#   * within the segment, the marker governs the nearest arch token AFTER it
-#     ("not supported on sm75"); if none, the nearest arch BEFORE it
-#     ("sm75 not supported");
+#   * within the segment, the marker governs the CONTIGUOUS COORDINATED arch run
+#     adjacent to it — the nearest arch token AFTER it and any further tokens
+#     joined to it by list connectors only ("not supported on sm75 and sm89"
+#     guards BOTH); if no arch follows, the nearest run BEFORE it ("sm75 and sm89
+#     not supported"). A non-connector gap breaks the run, so a contrastive
+#     "...sm75, but optimized for sm89" still leaves sm89 clean.
 #   * a marker in a segment with NO arch token carries back one step to the
 #     immediately-previous non-empty segment only if that segment names exactly
 #     one architecture ("Turing (sm75). Not supported").
@@ -113,6 +116,27 @@ def _token_arch_map(policy: dict) -> dict[str, str]:
 # This design and its case coverage were cross-checked with Codex.
 
 _HARD_BOUNDARIES = ".;\n"
+
+# Text that may join two arch tokens into ONE coordinated list governed by a
+# single guard marker: list connectors ("and"/"or") and punctuation only. Any
+# other word (e.g. ", but optimized for") breaks the run.
+_CONNECTOR_RE = re.compile(r"^[\s,/&+]*(?:(?:and|or)[\s,/&+]*)*$", re.IGNORECASE)
+
+
+def _coordinated_run(haystack: str, ordered: list) -> set[str]:
+    """`ordered` is arch-token occurrences sorted by proximity to a guard marker
+    (nearest first, extending away from it). Return the archs of the maximal
+    prefix that forms a coordinated list — consecutive tokens separated only by
+    list connectors. The first (nearest) token always anchors the run."""
+    run = [ordered[0]]
+    for prev, nxt in zip(ordered, ordered[1:]):
+        lo, hi = (prev[1], nxt[0]) if prev[1] <= nxt[0] else (nxt[1], prev[0])
+        if _CONNECTOR_RE.match(haystack[lo:hi]):
+            run.append(nxt)
+        else:
+            break
+    return {t[2] for t in run}
+
 
 
 def _hard_segments(text: str) -> list[tuple[int, int]]:
@@ -165,18 +189,20 @@ def _guarded_segment_archs(haystack: str, token_arch_map: dict[str, str],
     guarded: set[tuple[int, str]] = set()
     for mstart, mend, sid in marker_occs:
         seg_tokens = tokens_by_seg.get(sid, [])
-        governed_arch = None
+        governed_archs: set[str] = set()
         target_sid = sid
         if seg_tokens:
-            # nearest arch AFTER the marker (incl. a token whose right part the
-            # marker overlaps, e.g. 'requires sm' + 'sm75'); else nearest BEFORE.
-            after = [t for t in seg_tokens if t[0] >= mstart]
+            # The coordinated arch run AFTER the marker (nearest first), else the
+            # run BEFORE it. A guard naming a list ("sm75 and sm89") governs all.
+            after = sorted((t for t in seg_tokens if t[0] >= mstart),
+                           key=lambda t: (t[0], t[1]))
             if after:
-                governed_arch = min(after, key=lambda t: (t[0], t[1]))[2]
+                governed_archs = _coordinated_run(haystack, after)
             else:
-                before = [t for t in seg_tokens if t[1] <= mstart]
+                before = sorted((t for t in seg_tokens if t[1] <= mstart),
+                                key=lambda t: (t[1], t[0]), reverse=True)
                 if before:
-                    governed_arch = max(before, key=lambda t: (t[1], t[0]))[2]
+                    governed_archs = _coordinated_run(haystack, before)
         else:
             # Orphan marker segment: carry back one step to a single-arch segment.
             prev = sid - 1
@@ -185,10 +211,10 @@ def _guarded_segment_archs(haystack: str, token_arch_map: dict[str, str],
             if prev >= 0:
                 prev_arches = {t[2] for t in tokens_by_seg.get(prev, [])}
                 if len(prev_arches) == 1:
-                    governed_arch = next(iter(prev_arches))
+                    governed_archs = prev_arches
                     target_sid = prev
-        if governed_arch is not None:
-            guarded.add((target_sid, governed_arch))
+        for arch in governed_archs:
+            guarded.add((target_sid, arch))
     return guarded
 
 

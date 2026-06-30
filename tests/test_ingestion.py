@@ -179,6 +179,33 @@ class ClassifierTests(unittest.TestCase):
         self.assertEqual(v["decision"], "include")
         self.assertEqual(v["architectures"], ["sm86"])
 
+    def test_multi_arch_guard_clause_guards_all_listed_archs(self):
+        # R4 regression: a single guard clause naming a COORDINATED arch list
+        # ("not supported on sm75 and sm89") must guard BOTH archs, not just the
+        # nearest one -> the PR has no clean evidence -> capability-guard-only.
+        v = self._verdict({"title": "MoE kernel",
+                           "body": "Adds a path; not supported on sm75 and sm89.",
+                           "changed_paths": ["x.cu"]})
+        self.assertEqual(v["decision"], "skip")
+        self.assertEqual(v["reason"], "capability-guard-only")
+
+    def test_multi_arch_guard_list_before_marker(self):
+        # Symmetric: the coordinated list precedes the marker.
+        v = self._verdict({"title": "MoE kernel",
+                           "body": "sm75 and sm89 not supported; fall back to generic.",
+                           "changed_paths": ["x.cu"]})
+        self.assertEqual(v["decision"], "skip")
+        self.assertEqual(v["reason"], "capability-guard-only")
+
+    def test_contrastive_after_guard_list_stays_clean(self):
+        # A non-connector gap ("..., but optimized for") breaks the coordinated
+        # run, so sm89 after the contrast is still a clean include.
+        v = self._verdict({"title": "kernel",
+                           "body": "not supported on sm75, but optimized for sm89.",
+                           "changed_paths": ["x.cu"]})
+        self.assertEqual(v["decision"], "include")
+        self.assertEqual(v["architectures"], ["sm89"])
+
 
 class GeneratorTests(unittest.TestCase):
     """generation from the committed seed manifest, offline."""

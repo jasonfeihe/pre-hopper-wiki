@@ -44,6 +44,19 @@ def _vocab(root: Path, key: str) -> set:
     return set(data.get(key, []) or [])
 
 
+def _allowed_statuses(root: Path) -> list[str]:
+    """The source-pr `status` enum, read from the schema source of truth so the
+    pre-emit check can never drift from validate.py. Falls back to the canonical
+    set if the schema is unreadable, so the check never silently no-ops."""
+    fallback = ["open", "merged", "closed"]
+    try:
+        schemas = yaml.safe_load((root / "data" / "schemas.yaml").read_text(encoding="utf-8")) or {}
+        allowed = ((schemas.get("source-pr", {}) or {}).get("constraints", {}) or {}).get("status")
+        return list(allowed) if allowed else fallback
+    except (OSError, yaml.YAMLError):
+        return fallback
+
+
 def _evidence_sentence(evidence: list[dict]) -> str:
     bits = [f"{e['architecture']} via {e['evidence_type']} ('{e['token']}')" for e in evidence]
     return "Pre-Hopper relevance: " + "; ".join(bits) + "."
@@ -83,7 +96,8 @@ def render_page(entry: dict, verdict: dict, captured_at: str) -> str:
     return f"---\n{front}---\n\n# {entry['title']}\n\n{body}\n"
 
 
-def validate_page_fields(entry: dict, verdict: dict, vocabs: dict, arch_vocab: set) -> list[str]:
+def validate_page_fields(entry: dict, verdict: dict, vocabs: dict, arch_vocab: set,
+                         allowed_statuses: list[str]) -> list[str]:
     """Hard pre-emit checks so the generator never writes an invalid page. Every
     controlled-vocabulary list field on the entry must use only in-vocabulary
     values (mirrors validate.py so generation can't outrun the validator)."""
@@ -104,7 +118,12 @@ def validate_page_fields(entry: dict, verdict: dict, vocabs: dict, arch_vocab: s
         for v in entry.get(field, []):
             if v not in vocabs.get(field, set()):
                 errs.append(f"{label}: {field} value '{v}' not in data/tags.yaml")
-    if entry.get("status") == "merged" and not entry.get("merge_sha"):
+    # status must be in the source-pr schema enum BEFORE we emit a page, else the
+    # page would only fail validate.py later (the generator's pre-emit contract).
+    status = entry.get("status")
+    if status not in allowed_statuses:
+        errs.append(f"{label}: status '{status}' not in {allowed_statuses}")
+    if status == "merged" and not entry.get("merge_sha"):
         errs.append(f"{label}: status merged but no merge_sha")
     return errs
 
@@ -138,6 +157,7 @@ def main():
         "languages": _vocab(root, "languages"),
     }
     arch_vocab = vocabs["architectures"]
+    allowed_statuses = _allowed_statuses(root)
 
     emitted, skipped = [], []
     hard_errors = []
@@ -158,7 +178,7 @@ def main():
                 "_page_path": root / "sources" / "prs" / entry["repo_slug"] / f"PR-{entry['pr']}.md",
             })
             continue
-        errs = validate_page_fields(entry, verdict, vocabs, arch_vocab)
+        errs = validate_page_fields(entry, verdict, vocabs, arch_vocab, allowed_statuses)
         if errs:
             hard_errors.extend(errs)
             continue

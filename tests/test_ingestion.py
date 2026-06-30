@@ -268,6 +268,34 @@ class GeneratorTests(unittest.TestCase):
             self.assertEqual(r.returncode, 1)
             self.assertIn("not in data/tags.yaml", r.stderr)
 
+    def test_invalid_status_is_hard_error_not_a_page(self):
+        # R5 regression: a mistyped status must be rejected PRE-EMIT (mirroring the
+        # source-pr schema enum), never written into a page that validate.py would
+        # later reject. Use a fresh in-scope entry so no committed page pre-exists.
+        with tempfile.TemporaryDirectory() as d:
+            kb = _clone_kb(Path(d))
+            fx = kb / "tests" / "fixtures" / "seed" / "cutlass"
+            fx.mkdir(parents=True, exist_ok=True)
+            (fx / "PR-9200.json").write_text(json.dumps({
+                "number": 9200, "title": "Optimize sm89 L40 fp8 mma.sync kernel",
+                "changed_paths": ["a.cu"],
+            }), encoding="utf-8")
+            manifest = kb / "tests" / "fixtures" / "seed" / "seed-manifest.yaml"
+            data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+            data["entries"].append({
+                "repo_slug": "cutlass", "repo": "NVIDIA/cutlass", "pr": 9200,
+                "title": "Optimize sm89 L40 fp8 mma.sync kernel", "author": "x",
+                "date": "2025-01-01", "url": "https://example.com/9200",
+                "status": "mergd",  # typo, not in [open, merged, closed]
+                "fixture": "tests/fixtures/seed/cutlass/PR-9200.json", "tags": [],
+            })
+            manifest.write_text(yaml.safe_dump(data), encoding="utf-8")
+            r = run_script("generate-pr-pages.py", "--root", str(kb))
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertIn("status 'mergd'", r.stderr)
+            page = kb / "sources" / "prs" / "cutlass" / "PR-9200.md"
+            self.assertFalse(page.exists(), "invalid status must not write a page")
+
     def test_skip_verdict_logs_not_pages(self):
         with tempfile.TemporaryDirectory() as d:
             kb = _clone_kb(Path(d))

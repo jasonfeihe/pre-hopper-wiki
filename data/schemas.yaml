@@ -308,7 +308,7 @@ candidate-ledger:
     # enforced by scripts/validate.py validate_candidate_ledgers().
     summary_counts_must_match: true
 
-## data/refresh-search-results.yaml (AC-8). Per-repo record of what a discovery
+## data/refresh-search-results.yaml. Per-repo record of what a discovery
 ## refresh saw. Byte-stable; pr_numbers_seen sorted ascending. The refresh-subset
 ## validator confirms every seen PR is represented in the matching ledger.
 refresh-search-results:
@@ -323,7 +323,7 @@ refresh-search-results:
       - pr_numbers_seen
       - last_pr_date_seen
 
-## data/pr-page-skipped.yaml (AC-1/AC-5). Skip audit emitted by
+## data/pr-page-skipped.yaml. Skip audit emitted by
 ## scripts/generate-pr-pages.py. Every row's `reason` must be a key in
 ## data/inclusion-policy.yaml::skip_reasons (enforced by the validator).
 pr-page-skipped-audit:

@@ -61,7 +61,7 @@ techniques:
   - data-reuse
   - quantization
   - fine-grained-quantization
-  # General-GPU / memory-system techniques (all-GPU-kernel scope, DEC-4).
+  # General-GPU / memory-system techniques (all-GPU-kernel scope).
   - memory-bandwidth-bound
   - radix-select
   - warp-aggregation
@@ -88,7 +88,7 @@ kernel_types:
   - moe
   - decode
   - prefill
-  # Vector-search / general-GPU kernel types (all-GPU-kernel scope, DEC-4;
+  # Vector-search / general-GPU kernel types (all-GPU-kernel scope;
   # covers cuVS and similar libraries).
   - knn
   - vector-search

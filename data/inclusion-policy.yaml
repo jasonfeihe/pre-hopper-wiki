@@ -14,8 +14,8 @@
 ## SCOPE DECISIONS (see .humanize/plan-2.md):
 ##   * Architecture set is exactly {sm75, sm86, sm89}. sm80 / A100 is OUT OF
 ##     SCOPE and is its own skip reason (`sm80-only`); it is never mapped to
-##     sm86. Widening is future work (FUT-4).
-##   * Domain scope is ALL GPU kernel optimization (DEC-4), incl. vector-search
+##     sm86. Widening is deliberate future work.
+##   * Domain scope is ALL GPU kernel optimization, incl. vector-search
 ##     (cuVS): distance/top-k/IVF/PQ/graph-search kernels.
 
 schema_version: 1
@@ -86,12 +86,12 @@ evidence_tiers:
 ## ---------------------------------------------------------------------------
 ## Skip taxonomy. Every skip-logged row (data/pr-page-skipped.yaml) and every
 ## ledger `exclude` reason should map to one of these. The validator enforces
-## that any skip `reason` used is a key here (AC-1).
+## that any skip `reason` used is a key here.
 ## ---------------------------------------------------------------------------
 skip_reasons:
   hopper-only: PR targets only Hopper (sm90/sm90a/H100); no in-scope pre-Hopper work.
   blackwell-only: PR targets only Blackwell (sm100/sm120/B200) features (tcgen05/TMEM/CLC/NVFP4); out of scope.
-  sm80-only: PR targets only Ampere A100 (sm80); out of the {sm75,sm86,sm89} scope (see FUT-4). Not mapped to sm86.
+  sm80-only: PR targets only Ampere A100 (sm80); out of the {sm75,sm86,sm89} scope (deliberate; widening is future work). Not mapped to sm86.
   no-prehopper-evidence: Kernel PR with no defensible in-scope architecture evidence (generic CUDA / architecture-agnostic).
   non-kernel: PR does not touch GPU kernel / CUDA / PTX / device code.
   framework-only: Host-side framework/serving/scheduling/model-API change with no kernel content.

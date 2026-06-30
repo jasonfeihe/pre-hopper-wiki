@@ -19,42 +19,43 @@ keywords_used:
 - ldmatrix
 - cp.async
 - fp8
-notes: >-
-  Hand-reviewed pre-Hopper candidate ledger for FlashInfer. Reviewer evidence
-  rationale and coverage gaps are recorded in docs/seed-candidates.md. `include`
-  rows carry architecture_evidence; out-of-scope (sm90/sm100/sm80) PRs are
-  excluded with a taxonomy reason.
-total_candidates: 4
+total_candidates: 5
 included: 2
 excluded: 1
-deferred: 0
+deferred: 1
 needs_review: 1
+notes: Hand-reviewed pre-Hopper candidate ledger for FlashInfer. Reviewer evidence
+  rationale and coverage gaps are recorded in docs/seed-candidates.md. `include` rows
+  carry architecture_evidence; out-of-scope (sm90/sm100/sm80) PRs are excluded with
+  a taxonomy reason.
 prs:
-- number: 1973
-  title: 'Feature: Add support for L40 FusedMoE in cutlass path'
-  date: '2025-10-23'
-  decision: include
-  reason: >-
-    Adds an sm89 (Ada / L40) CUTLASS FusedMoE path with FP8 E4M3 tensor-core MMA;
-    direct device + sm mention, in scope. Materialized as pr-flashinfer-1973.
-  architecture_evidence: 'direct-device-mention: L40 -> sm89; direct-sm-mention: sm89'
-- number: 821
-  title: 'bugfix: bugfix on sm89 MLA'
-  date: '2025-02-13'
-  decision: include
-  reason: >-
-    Bugfix to the sm89 (Ada) MLA decode kernel; explicit sm89 target, in scope.
-  architecture_evidence: 'direct-sm-mention: sm89 (MLA decode kernel)'
-- number: 385
-  title: 'bugfix: Fix invalid kernel configuration for sm86'
-  date: '2024-07-20'
-  decision: needs-review
-  reason: >-
-    sm86 (A10) shared-memory launch-config fix — already materialized as the
-    seed page pr-flashinfer-385; kept as needs-review here only to exercise the
-    ledger's needs-review path and confirm it is not double-counted as include.
 - number: 2157
   title: fix xqa mha_sm90.cu
   date: '2025-12-02'
   decision: exclude
   reason: Hopper-only (sm90) xQA MHA fix; no pre-Hopper relevance.
+- number: 1973
+  title: 'Feature: Add support for L40 FusedMoE in cutlass path'
+  date: '2025-10-23'
+  decision: include
+  reason: Adds an sm89 (Ada / L40) CUTLASS FusedMoE path with FP8 E4M3 tensor-core
+    MMA; direct device + sm mention, in scope. Materialized as pr-flashinfer-1973.
+  architecture_evidence: 'direct-device-mention: L40 -> sm89; direct-sm-mention: sm89'
+- number: 999
+  title: new ampere a10 cp.async pipeline
+  date: '2024-05-01'
+  decision: defer
+  reason: surfaced by discovery refresh; needs triage
+- number: 821
+  title: 'bugfix: bugfix on sm89 MLA'
+  date: '2025-02-13'
+  decision: include
+  reason: Bugfix to the sm89 (Ada) MLA decode kernel; explicit sm89 target, in scope.
+  architecture_evidence: 'direct-sm-mention: sm89 (MLA decode kernel)'
+- number: 385
+  title: 'bugfix: Fix invalid kernel configuration for sm86'
+  date: '2024-07-20'
+  decision: needs-review
+  reason: sm86 (A10) shared-memory launch-config fix — already materialized as the
+    seed page pr-flashinfer-385; kept as needs-review here only to exercise the ledger's
+    needs-review path and confirm it is not double-counted as include.

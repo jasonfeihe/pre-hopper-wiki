@@ -1,4 +1,4 @@
-# Tracked repositories for pre-Hopper candidate ledgers (DEC-2).
+# Tracked repositories for pre-Hopper candidate ledgers (the agreed tracked repo set).
 # A candidates/<slug>.yaml whose `repo` field is not listed here is flagged
 # out-of-scope-repo by scripts/validate.py.
 NVIDIA/cutlass

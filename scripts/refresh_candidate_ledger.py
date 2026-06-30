@@ -15,7 +15,7 @@ inputs: rows sorted by PR number descending, pr_numbers_seen sorted ascending,
 atomic temp-file-then-replace writes so a partial/failed run cannot corrupt a
 ledger.
 
-Discovery window defaults to 2020-01-01 -> the cutoff date (DEC-1). The window is
+Discovery window defaults to 2020-01-01 -> the cutoff date (configurable via --since/--until). The window is
 recorded in each ledger header and in refresh-search-results.yaml.
 
 Usage:
@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -39,7 +40,7 @@ from _wiki_root import WIKI_ROOT as _DEFAULT_ROOT  # noqa: E402
 
 DEFAULT_SINCE = "2020-01-01"
 
-# Tracked repos: slug -> full GitHub "owner/name" (DEC-2). cuVS included (DEC-2/4).
+# Tracked repos: slug -> full GitHub "owner/name" for the tracked repo set; cuVS included (vector-search is in scope).
 TRACKED_REPOS = {
     "cutlass": "NVIDIA/cutlass",
     "sglang": "sgl-project/sglang",
@@ -77,6 +78,28 @@ def atomic_write(path: Path, text: str) -> None:
 
 def dump_yaml(data) -> str:
     return yaml.safe_dump(data, sort_keys=False, allow_unicode=True, default_flow_style=False)
+
+
+_ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def filter_window(candidates: list[dict], since: str, until: str, slug: str) -> list[dict]:
+    """Keep only candidates whose date is within [since, until] inclusive.
+
+    Dates are ISO `YYYY-MM-DD` strings, so lexical comparison is chronological.
+    A missing/unparseable date is a hard error: a malformed fixture must not
+    silently leak out-of-window rows into the deterministic refresh result."""
+    out = []
+    for cand in candidates:
+        d = str(cand.get("date") or "")
+        if not _ISO_DATE.match(d):
+            raise SystemExit(
+                f"ERROR: candidate {slug}#{cand.get('number')} has missing/invalid "
+                f"date {d!r}; expected YYYY-MM-DD."
+            )
+        if since <= d <= until:
+            out.append(cand)
+    return out
 
 
 def fixture_candidates(root: Path, slug: str) -> list[dict]:
@@ -147,18 +170,23 @@ def merge_into_ledger(ledger: dict, candidates: list[dict], repo_full: str,
     for r in rows:
         if r.get("decision") in tally:
             tally[r["decision"]] += 1
-    return {
+    # Preserve a curated keyword set and reviewer notes if the ledger already
+    # has them — a refresh must not clobber hand-authored metadata.
+    out = {
         "repo": repo_full,
         "searched_at": searched_at,
         "window_start": since,
-        "keywords_used": keywords,
+        "keywords_used": ledger.get("keywords_used") or keywords,
         "total_candidates": len(rows),
         "included": tally["include"],
         "excluded": tally["exclude"],
         "deferred": tally["defer"],
         "needs_review": tally["needs-review"],
-        "prs": rows,
     }
+    if ledger.get("notes"):
+        out["notes"] = ledger["notes"]
+    out["prs"] = rows
+    return out
 
 
 def main():
@@ -199,6 +227,10 @@ def main():
             cands = live_candidates(full, DEFAULT_KEYWORDS, args.since, until)
         else:
             cands = fixture_candidates(root, slug)
+        # Apply the discovery window to BOTH modes: only PRs whose date is in
+        # [since, until] are merged/recorded, matching the window the ledger and
+        # refresh-search-results header advertise.
+        cands = filter_window(cands, args.since, until, slug)
 
         ledger_path = root / "candidates" / f"{slug}.yaml"
         ledger = {}

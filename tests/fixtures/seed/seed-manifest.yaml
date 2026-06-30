@@ -28,7 +28,7 @@ entries:
     summary: >-
       Adds a Marlin INT4 weight-only quantized MoE/GEMM kernel path for Turing
       (sm75, e.g. T4). The Turing branch is guarded on __CUDA_ARCH__ == 750 and
-      uses mma.sync.aligned.m16n8k8 with ldmatrix to drive Turing's
+      uses sub-byte INT4 mma.sync with ldmatrix operand loads to drive Turing's
       second-generation Tensor Cores, extending Marlin (previously sm80+) down
       to the T4.
 

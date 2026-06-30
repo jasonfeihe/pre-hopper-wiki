@@ -36,7 +36,7 @@ def run_script(name, *args):
 
 
 class ClassifierTests(unittest.TestCase):
-    """AC-4: fixture-driven verdicts, deterministic, with the required negatives."""
+    """fixture-driven verdicts, deterministic, with the required negatives."""
 
     def _verdict(self, candidate):
         return classify(candidate, POLICY, ARCHS)
@@ -146,7 +146,7 @@ class ClassifierTests(unittest.TestCase):
 
 
 class GeneratorTests(unittest.TestCase):
-    """AC-5 / AC-6: generation from the committed seed manifest, offline."""
+    """generation from the committed seed manifest, offline."""
 
     def test_seed_generates_three_pages_one_per_arch(self):
         with tempfile.TemporaryDirectory() as d:
@@ -234,7 +234,7 @@ class GeneratorTests(unittest.TestCase):
 
 
 class RefreshTests(unittest.TestCase):
-    """AC-8: fixture-mode discovery, no network, idempotent, atomic."""
+    """fixture-mode discovery, no network, idempotent, atomic."""
 
     def test_refresh_preserves_existing_decisions(self):
         with tempfile.TemporaryDirectory() as d:
@@ -276,9 +276,78 @@ class RefreshTests(unittest.TestCase):
                        "--repos", "cutlass,flashinfer", "--searched-at", "2026-06-30")
             self.assertEqual(run_script("validate.py", "--root", str(kb)).returncode, 0)
 
+    def test_refresh_honors_discovery_window(self):
+        # Out-of-window PRs (before --since or after --until) must be dropped in
+        # fixture mode, not merged into the ledger or refresh results.
+        with tempfile.TemporaryDirectory() as d:
+            kb = _clone_kb(Path(d))
+            # Start from a clean cutlass ledger so this isolates window filtering
+            # (the committed ledger may already carry fixture-discovered rows).
+            (kb / "candidates" / "cutlass.yaml").write_text(
+                "repo: NVIDIA/cutlass\nsearched_at: '2026-06-30'\nwindow_start: '2020-01-01'\n"
+                "keywords_used: [sm75]\ntotal_candidates: 0\nincluded: 0\nexcluded: 0\n"
+                "deferred: 0\nneeds_review: 0\nprs: []\n", encoding="utf-8")
+            (kb / "tests" / "fixtures" / "gh" / "cutlass.json").write_text(json.dumps([
+                {"number": 100, "title": "pre-window", "createdAt": "2019-12-31T00:00:00Z"},
+                {"number": 200, "title": "in-window", "createdAt": "2024-01-01T00:00:00Z"},
+                {"number": 300, "title": "future", "createdAt": "2027-01-01T00:00:00Z"},
+            ]), encoding="utf-8")
+            r = run_script("refresh_candidate_ledger.py", "--root", str(kb), "--repos", "cutlass",
+                           "--since", "2020-01-01", "--until", "2026-06-30", "--searched-at", "2026-06-30")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            led = yaml.safe_load((kb / "candidates" / "cutlass.yaml").read_text(encoding="utf-8"))
+            nums = sorted(x["number"] for x in led["prs"])
+            self.assertEqual(nums, [200], f"only in-window PR should merge, got {nums}")
+            rsr = yaml.safe_load((kb / "data" / "refresh-search-results.yaml").read_text(encoding="utf-8"))
+            cut = next(e for e in rsr["repos"] if e["repo_slug"] == "cutlass")
+            self.assertEqual(cut["pr_numbers_seen"], [200])
+            self.assertEqual(cut["last_pr_date_seen"], "2024-01-01")
+
+    def test_refresh_rejects_undated_candidate(self):
+        # A malformed fixture row without a valid date is a hard error, not a
+        # silent leak.
+        with tempfile.TemporaryDirectory() as d:
+            kb = _clone_kb(Path(d))
+            (kb / "tests" / "fixtures" / "gh" / "cutlass.json").write_text(json.dumps([
+                {"number": 1, "title": "no date"},
+            ]), encoding="utf-8")
+            r = run_script("refresh_candidate_ledger.py", "--root", str(kb), "--repos", "cutlass",
+                           "--searched-at", "2026-06-30")
+            self.assertNotEqual(r.returncode, 0)
+
+
+class CommittedArtifactTests(unittest.TestCase):
+    """the refresh-search-results deliverable must exist in the live repo
+    (a clean checkout), cover the tracked repo set, and validate."""
+
+    def test_refresh_search_results_committed_and_valid(self):
+        rsr = REPO / "data" / "refresh-search-results.yaml"
+        self.assertTrue(rsr.is_file(), "data/refresh-search-results.yaml must be committed")
+        data = yaml.safe_load(rsr.read_text(encoding="utf-8"))
+        self.assertIn("cutoff_date", data)
+        slugs = {e["repo_slug"] for e in data["repos"]}
+        # All seven tracked repos represented.
+        self.assertEqual(slugs, {"cutlass", "sglang", "vllm", "flashinfer",
+                                 "pytorch", "tensorrt-llm", "cuvs"})
+        for e in data["repos"]:
+            self.assertEqual(e["pr_numbers_seen"], sorted(e["pr_numbers_seen"]),
+                             f"{e['repo_slug']} pr_numbers_seen not sorted")
+            for k in ("searched_at", "window_start", "last_pr_date_seen"):
+                self.assertIn(k, e)
+        # The live repo validates with the committed artifact present.
+        self.assertEqual(run_script("validate.py", "--root", str(REPO)).returncode, 0)
+
+    def test_vllm_seed_has_no_incorrect_int4_shape(self):
+        # The Turing INT4 m16n8k8 shape (a Codex hard error) must not reappear in
+        # the committed seed manifest or generated vLLM page.
+        manifest = (REPO / "tests" / "fixtures" / "seed" / "seed-manifest.yaml").read_text(encoding="utf-8")
+        page = (REPO / "sources" / "prs" / "vllm" / "PR-29901.md").read_text(encoding="utf-8")
+        self.assertNotIn("m16n8k8", manifest)
+        self.assertNotIn("m16n8k8", page)
+
 
 class ScaleTests(unittest.TestCase):
-    """AC-9: the ingestion-generated source-pr page shape validates and indexes
+    """The ingestion-generated source-pr page shape validates and indexes
     at volume, offline, deterministically — separate from goal-1 ingestion."""
 
     N = 300
@@ -287,7 +356,7 @@ class ScaleTests(unittest.TestCase):
     def _make_synthetic_kb(self, dest: Path) -> Path:
         kb = _clone_kb(dest)
         # Remove the small seed pages so the scale test operates purely on the
-        # newly-generated synthetic volume (AC-9 negative requirement).
+        # newly-generated synthetic volume (operate on generated volume, not the existing pages).
         shutil.rmtree(kb / "sources" / "prs", ignore_errors=True)
         for i in range(self.N):
             arch = self.ARCH_CYCLE[i % 3]

@@ -10,9 +10,19 @@ keywords_used:
 - L40
 - mma.sync
 - cp.async
-total_candidates: 0
+total_candidates: 2
 included: 0
 excluded: 0
-deferred: 0
+deferred: 2
 needs_review: 0
-prs: []
+prs:
+- number: 2472
+  title: Ada sm89 FP8 GEMM example
+  date: '2024-03-15'
+  decision: defer
+  reason: surfaced by discovery refresh; needs triage
+- number: 1989
+  title: Turing sm75 tensor-core epilogue
+  date: '2023-08-01'
+  decision: defer
+  reason: surfaced by discovery refresh; needs triage

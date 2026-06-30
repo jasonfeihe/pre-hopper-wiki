@@ -12,23 +12,22 @@ keywords_used:
 - marlin
 - mma.sync
 - quantization
-notes: >-
-  Pre-Hopper candidate ledger for vLLM. The included row is materialized as the
-  seed page pr-vllm-29901. vLLM surfaces many raw "Turing"/"sm75" keyword hits
-  that are capability-guard / fallback strings, not optimization targets (see
-  docs/seed-candidates.md); those are not included.
 total_candidates: 1
 included: 1
 excluded: 0
 deferred: 0
 needs_review: 0
+notes: Pre-Hopper candidate ledger for vLLM. The included row is materialized as the
+  seed page pr-vllm-29901. vLLM surfaces many raw "Turing"/"sm75" keyword hits that
+  are capability-guard / fallback strings, not optimization targets (see docs/seed-candidates.md);
+  those are not included.
 prs:
 - number: 29901
   title: '[Kernel][Quantization][MoE] add marlin kernel support for turing (sm75)'
   date: '2025-12-02'
   decision: include
-  reason: >-
-    Adds a Marlin INT4 MoE/GEMM kernel path for Turing (sm75 / T4), guarded on
-    __CUDA_ARCH__ == 750 with mma.sync + ldmatrix. Direct sm + device evidence,
+  reason: Adds a Marlin INT4 MoE/GEMM kernel path for Turing (sm75 / T4), guarded
+    on __CUDA_ARCH__ == 750 with mma.sync + ldmatrix. Direct sm + device evidence,
     in scope. Materialized as pr-vllm-29901.
-  architecture_evidence: 'direct-sm-mention: sm75 / turing (sm75); arch-guard-codepath: __CUDA_ARCH__ == 750'
+  architecture_evidence: 'direct-sm-mention: sm75 / turing (sm75); arch-guard-codepath:
+    __CUDA_ARCH__ == 750'

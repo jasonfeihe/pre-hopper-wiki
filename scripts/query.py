@@ -27,6 +27,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _wiki_root import WIKI_ROOT as _DEFAULT_ROOT  # noqa: E402
+from validate import gate_or_exit  # noqa: E402
 
 _ALIAS_CACHE = {}
 
@@ -215,6 +216,10 @@ def main():
     args = parser.parse_args()
 
     root = Path(args.root).expanduser().resolve() if args.root else _DEFAULT_ROOT
+
+    # Refuse to surface results from an invalid knowledge base (out-of-scope or
+    # schema-invalid pages must not appear as valid query hits).
+    gate_or_exit(root)
 
     pages = filter_pages(load_all_pages(root), args, root)
 

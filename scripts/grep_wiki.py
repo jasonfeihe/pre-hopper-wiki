@@ -20,6 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _wiki_root import WIKI_ROOT as _DEFAULT_ROOT  # noqa: E402
+from validate import gate_or_exit  # noqa: E402
 
 
 def iter_files(scope: str, root: Path):
@@ -68,6 +69,10 @@ def main():
     args = parser.parse_args()
 
     root = Path(args.root).expanduser().resolve() if args.root else _DEFAULT_ROOT
+
+    # Refuse to search an invalid knowledge base as plain text (out-of-scope or
+    # schema-invalid pages must not be matched as if valid).
+    gate_or_exit(root)
 
     compiled = []
     for p in args.patterns:

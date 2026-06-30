@@ -23,6 +23,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _wiki_root import WIKI_ROOT as _DEFAULT_ROOT  # noqa: E402
+from validate import gate_or_exit  # noqa: E402
 
 
 def find_page(lookup: str, root: Path):
@@ -71,6 +72,11 @@ def main():
     args = parser.parse_args()
 
     root = Path(args.root).expanduser().resolve() if args.root else _DEFAULT_ROOT
+
+    # Refuse to fetch from an invalid knowledge base (an invalid/out-of-scope
+    # page must not be served as if it were valid). A valid KB with a missing id
+    # still produces the clean not-found exit below.
+    gate_or_exit(root)
 
     page_path = find_page(args.lookup, root)
     if not page_path:

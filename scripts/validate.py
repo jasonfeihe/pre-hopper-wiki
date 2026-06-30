@@ -16,15 +16,22 @@ Checks performed:
   6. Link integrity: every id referenced in `sources:` and `related:` resolves
      to an existing page id.
   7. Per-type constraints (id_prefix, type literal, allowed source_category,
-     reproducibility_minimum, merge_sha-when-merged).
+     reproducibility_minimum, merge_sha-when-merged, and any other enum
+     constraint declared in data/schemas.yaml such as source-pr.status).
   8. wiki/*.md pages live under a recognized type subdirectory.
-  9. data/version-claims.yaml and data/refresh-cutoff.yaml conform to their
-     registry schemas.
+  9. data/version-claims.yaml (including claim id_prefix, tool enum, and
+     applies_to/source_ids minimums) and data/refresh-cutoff.yaml conform to
+     their registry schemas.
 
 There is deliberately NO "Blackwell-first" / `blackwell_relevance` rule: this
 knowledge base is pre-Hopper-scoped, and no page type requires a relevance
 field. A neutral, optional `scope_relevance` field is accepted where the schema
 lists it.
+
+`validate_root(root) -> list[str]` exposes these checks as an importable gate so
+the other entry-point scripts (generate-indices, query, get_page, grep_wiki)
+refuse to operate on an invalid knowledge base rather than producing false-pass
+results.
 
 Exit code 0 on success, 1 on any validation error.
 
@@ -38,13 +45,12 @@ from __future__ import annotations
 import argparse
 import re
 import sys
-from collections import defaultdict
 from pathlib import Path
 
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _wiki_root import resolve_wiki_root, WIKI_ROOT as _DEFAULT_ROOT  # noqa: E402
+from _wiki_root import WIKI_ROOT as _DEFAULT_ROOT  # noqa: E402
 
 # Controlled-vocabulary frontmatter fields whose list/scalar values must be
 # enumerated in data/tags.yaml. Maps the frontmatter key -> the tags.yaml key.
@@ -65,6 +71,12 @@ SCALAR_VOCAB_FIELDS = {
 # The reproducibility ladder, ordered weakest -> strongest, for enforcing
 # `reproducibility_minimum` constraints.
 REPRO_LADDER = ["concept", "pseudocode", "snippet", "runnable", "benchmarked"]
+
+# Constraint keys handled by dedicated logic (not by the generic enum pass).
+SPECIAL_CONSTRAINT_KEYS = {
+    "id_prefix", "type", "reproducibility_minimum", "merge_sha_required_when",
+    "source_category",
+}
 
 # Recognized wiki subdirectories (a wiki/*.md page must live under one of these).
 WIKI_TYPE_DIRS = {
@@ -210,9 +222,9 @@ class Validator:
         # Required fields present. A required field must have its key present
         # and a non-null/non-empty-string value; empty LISTS are allowed for
         # most fields (e.g. `related: []`). The `sources` field is special: a
-        # wiki page must cite at least one source, so an empty sources list is
-        # rejected (see AC-8). This mirrors the reference KB's "every synthesized
-        # page is sourced" contract.
+        # synthesized wiki page must cite at least one source, so an empty
+        # sources list is rejected — mirroring the reference KB's
+        # "every synthesized page is sourced" contract.
         for field in sorted(required):
             present = field in fm and fm[field] not in (None, "", {})
             if not present:
@@ -307,6 +319,22 @@ class Validator:
                         f"vocabulary (data/tags.yaml {tags_key})"
                     )
 
+        # Generic enum constraints: any constraint key that names a real
+        # frontmatter field and whose value is a list of allowed values is
+        # enforced here (e.g. source-pr.status: [open, merged, closed]). The
+        # specially-handled keys above are skipped so we don't double-report.
+        for ckey, allowed in constraints.items():
+            if ckey in SPECIAL_CONSTRAINT_KEYS or not isinstance(allowed, list):
+                continue
+            if ckey not in fm or fm[ckey] is None:
+                continue
+            values = fm[ckey] if isinstance(fm[ckey], list) else [fm[ckey]]
+            for v in values:
+                if v not in allowed:
+                    self.err(
+                        f"{rel}: {ckey} '{v}' is not one of {allowed} for {ptype}"
+                    )
+
     def validate_links(self):
         """sources: and related: ids must resolve to a known page id."""
         for rel, fm in self.pages:
@@ -344,21 +372,48 @@ class Validator:
         schema = self.schemas.get("version-claims-registry", {})
         claim_schema = schema.get("claim_schema", {})
         req = set(claim_schema.get("required", []))
+        cc = claim_schema.get("constraints", {}) or {}
+        tool_enum = cc.get("tool")
+        id_prefix = cc.get("id_prefix")
+        applies_min = cc.get("applies_to_required_min")
+        source_min = cc.get("source_ids_required_min")
         for i, claim in enumerate(claims):
             if not isinstance(claim, dict):
                 self.err(f"data/version-claims.yaml: claim #{i} is not a mapping")
                 continue
+            label = claim.get("id", i)
             for field in sorted(req):
                 if field not in claim:
                     self.err(
                         f"data/version-claims.yaml: claim "
-                        f"'{claim.get('id', i)}' missing required field '{field}'"
+                        f"'{label}' missing required field '{field}'"
                     )
+            if id_prefix and isinstance(claim.get("id"), str) \
+                    and not claim["id"].startswith(id_prefix):
+                self.err(
+                    f"data/version-claims.yaml: claim id '{claim['id']}' must "
+                    f"start with '{id_prefix}'"
+                )
+            if tool_enum and "tool" in claim and claim["tool"] not in tool_enum:
+                self.err(
+                    f"data/version-claims.yaml: claim '{label}' tool "
+                    f"'{claim['tool']}' is not one of {tool_enum}"
+                )
+            if applies_min and len(claim.get("applies_to", []) or []) < applies_min:
+                self.err(
+                    f"data/version-claims.yaml: claim '{label}' needs at least "
+                    f"{applies_min} applies_to entr(y/ies)"
+                )
+            if source_min and len(claim.get("source_ids", []) or []) < source_min:
+                self.err(
+                    f"data/version-claims.yaml: claim '{label}' needs at least "
+                    f"{source_min} source_ids entr(y/ies)"
+                )
 
     def validate_refresh_cutoff(self):
         path = self.root / "data" / "refresh-cutoff.yaml"
         if not path.is_file():
-            return  # optional file; AC-2/AC-9 create it but validator does not require it
+            return  # optional file; the scaffold creates it but it is not required here
         try:
             data = load_yaml(path)
         except yaml.YAMLError as e:
@@ -375,16 +430,22 @@ class Validator:
 
     # ---- driver --------------------------------------------------------
 
-    def run(self) -> int:
+    def collect_errors(self) -> list[str]:
+        """Run every check and return the accumulated error strings, without
+        printing or exiting. Used both by the CLI and by the shared
+        validate_root() gate that the other scripts call."""
         if not self.load_required_data():
-            self._report()
-            return 1
+            return self.errors
         self.collect_pages()
         for rel, fm in self.pages:
             self.validate_page(rel, fm)
         self.validate_links()
         self.validate_version_claims()
         self.validate_refresh_cutoff()
+        return self.errors
+
+    def run(self) -> int:
+        self.collect_errors()
         return self._report()
 
     def _report(self) -> int:
@@ -395,6 +456,38 @@ class Validator:
             return 1
         print(f"VALIDATION OK: {len(self.pages)} page(s) validated, 0 errors")
         return 0
+
+
+def validate_root(root: Path) -> list[str]:
+    """Validate a knowledge-base root and return the list of error strings.
+
+    Returns an empty list when the knowledge base is valid (including a valid
+    empty knowledge base). Never prints and never exits — callers decide how to
+    report. This is the shared gate the non-validator scripts use before doing
+    any indexing / search / fetch work, so that schema- or vocabulary-invalid
+    knowledge-base state never produces a false-pass result.
+    """
+    return Validator(Path(root)).collect_errors()
+
+
+def gate_or_exit(root: Path) -> None:
+    """Shared entry-point guard for the non-validator scripts.
+
+    Runs validate_root(); if the knowledge base has any validation errors, prints
+    a concise failure message plus the errors to stderr and exits non-zero. A
+    valid knowledge base (including a valid empty one) returns normally so the
+    caller proceeds to its real work.
+    """
+    errors = validate_root(root)
+    if errors:
+        print(
+            "ERROR: knowledge base failed validation; "
+            "run `uv run python scripts/validate.py` to see details.",
+            file=sys.stderr,
+        )
+        for e in errors:
+            print(f"  - {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 def main():

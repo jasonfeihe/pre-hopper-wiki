@@ -9,13 +9,14 @@ Run with:
 The suite builds throwaway knowledge-base roots in temp dirs (copying the real
 data/*.yaml and selected fixture pages) so it never mutates the live wiki/.
 It covers, among others:
-  * empty-KB validation passes and emits six valid header-only indices (AC-7)
+  * empty-KB validation passes and emits six valid header-only indices
   * generate-indices is deterministic (twice-run no diff) and regenerates over a
-    hand-edited index (AC-7)
-  * each invalid fixture is rejected by validate.py (AC-3 / AC-5 / AC-8)
-  * unparseable frontmatter is reported, not silently swallowed (AC-7)
-  * PREHOPPER_WIKI_ROOT override + BLACKWELL_WIKI_ROOT no-op (AC-6)
-  * the live seeded corpus validates clean (AC-8)
+    hand-edited index
+  * each invalid fixture is rejected by validate.py
+  * unparseable frontmatter is reported, not silently swallowed
+  * a schema/vocabulary-invalid page makes all five entry-point scripts fail
+  * PREHOPPER_WIKI_ROOT override + BLACKWELL_WIKI_ROOT no-op
+  * the live seeded corpus validates clean
 """
 
 from __future__ import annotations
@@ -151,7 +152,12 @@ class NegativeFixtureTests(unittest.TestCase):
             shutil.copy(FIXTURES / "unparseable.md", kb / "wiki" / "hardware" / "unparseable.md")
             g = run_script("generate-indices.py", root=kb)
             self.assertEqual(g.returncode, 1, "generate-indices must fail on unparseable frontmatter")
-            self.assertIn("frontmatter", g.stdout)
+            # The validation gate reports the offending file (to stderr) before
+            # any index is written; the message names the frontmatter problem.
+            self.assertIn("frontmatter", g.stdout + g.stderr)
+            # And no index must have been written from the invalid corpus.
+            idx = kb / "queries" / "by-hardware-feature.md"
+            self.assertFalse(idx.is_file() and "Untitled" in idx.read_text(encoding="utf-8"))
 
 
 class RootResolutionTests(unittest.TestCase):
@@ -241,11 +247,6 @@ Second hardware body, links back to the first via related.
 """
 
 
-def _ids_in(text):
-    import re as _re
-    return set(_re.findall(r"\(\.\./[^)]+\)", text))
-
-
 class IncrementalUpdateTests(unittest.TestCase):
     def test_add_validate_regenerate_preserves_prior_and_is_deterministic(self):
         with tempfile.TemporaryDirectory() as d:
@@ -295,6 +296,86 @@ class IncrementalUpdateTests(unittest.TestCase):
             v = run_script("validate.py", root=kb)
             self.assertEqual(v.returncode, 1)
             self.assertIn("unknown id", v.stdout)
+
+
+class AllScriptsValidationGateTests(unittest.TestCase):
+    """A schema/vocabulary-invalid page must cause ALL FIVE entry-point scripts
+    to fail/report, not just validate.py."""
+
+    def _kb_with_invalid_page(self, tmp):
+        kb = make_kb(Path(tmp))
+        # Provide a resolvable source so only the intended invalid page is at fault.
+        shutil.copy(REPO / "sources" / "docs" / "ptx-isa.md",
+                    kb / "sources" / "docs" / "ptx-isa.md")
+        # bad-arch.md targets sm90 (out of scope) — validate.py rejects it.
+        shutil.copy(FIXTURES / "bad-arch.md", kb / "wiki" / "hardware" / "bad-arch.md")
+        return kb
+
+    def test_all_five_scripts_fail_on_invalid_kb(self):
+        with tempfile.TemporaryDirectory() as d:
+            kb = self._kb_with_invalid_page(d)
+            # 1. validate.py
+            self.assertEqual(run_script("validate.py", root=kb).returncode, 1)
+            # 2. generate-indices.py: must fail AND not write the invalid page.
+            g = run_script("generate-indices.py", root=kb)
+            self.assertEqual(g.returncode, 1, g.stdout + g.stderr)
+            idx = kb / "queries" / "by-hardware-feature.md"
+            if idx.is_file():
+                self.assertNotIn("Out Of Scope", idx.read_text(encoding="utf-8"),
+                                 "invalid page leaked into a generated index")
+            # 3. query.py: must fail instead of returning the invalid page.
+            q = run_script("query.py", "--architecture", "sm90", root=kb)
+            self.assertEqual(q.returncode, 1, q.stdout + q.stderr)
+            self.assertNotIn("Out Of Scope", q.stdout)
+            # 4. get_page.py: must fail instead of printing the invalid page.
+            gp = run_script("get_page.py", "hw-fixture-bad-arch", root=kb)
+            self.assertEqual(gp.returncode, 1, gp.stdout + gp.stderr)
+            self.assertNotIn("Out Of Scope", gp.stdout)
+            # 5. grep_wiki.py: must fail instead of matching the invalid page.
+            gr = run_script("grep_wiki.py", "sm90", root=kb)
+            self.assertEqual(gr.returncode, 1, gr.stdout + gr.stderr)
+            self.assertNotIn("bad-arch.md", gr.stdout)
+
+    def test_gate_message_points_to_validate(self):
+        with tempfile.TemporaryDirectory() as d:
+            kb = self._kb_with_invalid_page(d)
+            for name in ("generate-indices.py", "query.py", "get_page.py", "grep_wiki.py"):
+                r = run_script(name, "x", root=kb) if name in ("query.py", "get_page.py", "grep_wiki.py") \
+                    else run_script(name, root=kb)
+                self.assertIn("failed validation", r.stderr,
+                              f"{name} did not emit the shared gate message")
+
+
+class SchemaConstraintTests(unittest.TestCase):
+    def test_bad_pr_status_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            kb = make_kb(Path(d))
+            (kb / "sources" / "prs").mkdir(parents=True, exist_ok=True)
+            shutil.copy(FIXTURES / "bad-status.md", kb / "sources" / "prs" / "bad-status.md")
+            v = run_script("validate.py", root=kb)
+            self.assertEqual(v.returncode, 1)
+            self.assertIn("status 'banana'", v.stdout)
+
+    def test_version_claims_constraints_enforced(self):
+        with tempfile.TemporaryDirectory() as d:
+            kb = make_kb(Path(d))
+            # Malformed claim: wrong id prefix, bad tool, empty applies_to/source_ids.
+            (kb / "data" / "version-claims.yaml").write_text(
+                "claims:\n"
+                "  - id: bad-claim\n"
+                "    tool: notatool\n"
+                "    claim_valid_for: x\n"
+                "    last_verified_release: y\n"
+                "    last_verified_at: '2026-06-30'\n"
+                "    applies_to: []\n"
+                "    source_ids: []\n",
+                encoding="utf-8",
+            )
+            v = run_script("validate.py", root=kb)
+            self.assertEqual(v.returncode, 1)
+            out = v.stdout
+            self.assertIn("vs-", out)          # id_prefix violation reported
+            self.assertIn("notatool", out)     # tool enum violation reported
 
 
 if __name__ == "__main__":

@@ -1,0 +1,128 @@
+## Canonical Aliases
+## Maps canonical terms to known aliases for search and normalization.
+## Format: canonical_term: [alias1, alias2, ...]
+##
+## Matching in query.py is case-insensitive. These let a user type a device
+## name (T4), a microarchitecture (Turing), or a dotted instruction form
+## (mma.sync) and still hit the canonical tag used in frontmatter.
+
+# Architecture names → canonical sm-tags
+sm75:
+  - Turing
+  - turing
+  - T4
+  - "Tesla T4"
+  - "SM75"
+  - sm_75
+  - "compute capability 7.5"
+
+sm86:
+  - Ampere
+  - ampere
+  - A10
+  - "NVIDIA A10"
+  - "SM86"
+  - sm_86
+  - "compute capability 8.6"
+
+sm89:
+  - "Ada Lovelace"
+  - Ada
+  - ada
+  - lovelace
+  - L20
+  - L40
+  - "NVIDIA L20"
+  - "NVIDIA L40"
+  - "SM89"
+  - sm_89
+  - "compute capability 8.9"
+
+# Hardware-feature aliases (dotted/instruction forms → canonical hyphenated tag)
+mma-sync:
+  - "mma.sync"
+  - "mma.sync.aligned"
+  - MMA
+  - "warp MMA"
+
+cp-async:
+  - "cp.async"
+  - "cp.async.ca"
+  - "cp.async.cg"
+  - "async copy"
+  - "asynchronous copy"
+
+ldmatrix:
+  - "ldmatrix"
+  - "ldmatrix.sync"
+  - "ld.matrix"
+
+wmma:
+  - WMMA
+  - "nvcuda::wmma"
+  - "wmma.mma"
+
+tf32:
+  - TF32
+  - "tensor float 32"
+  - "tensor-float-32"
+
+bf16:
+  - BF16
+  - bfloat16
+  - "brain float 16"
+
+fp8:
+  - FP8
+  - E4M3
+  - E5M2
+  - "e4m3"
+  - "e5m2"
+
+tensor-core:
+  - "tensor cores"
+  - "tensor core"
+  - TensorCore
+  - TC
+
+shared-memory:
+  - SMEM
+  - smem
+  - "shared mem"
+  - "on-chip shared memory"
+
+dp4a:
+  - DP4A
+  - "dp4a"
+  - "__dp4a"
+
+# Technique aliases
+warp-specialization:
+  - "warp specialization"
+  - warp-spec
+  - "warp specialized"
+
+persistent-kernel:
+  - "persistent kernels"
+  - "persistent scheduling"
+
+split-k:
+  - "split-K"
+  - "Split-K"
+  - splitk
+
+stream-k:
+  - "stream-K"
+  - "Stream-K"
+  - streamk
+
+# Kernel-type aliases
+flash-attention:
+  - FlashAttention
+  - "flash attention"
+  - "flash attn"
+  - FA
+
+grouped-gemm:
+  - "grouped GEMM"
+  - "group gemm"

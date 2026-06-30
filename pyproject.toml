@@ -1,0 +1,16 @@
+[project]
+name = "pre-hopper-wiki"
+version = "0.1.0"
+description = "Controlled-vocabulary knowledge base of GPU kernel optimization for pre-Hopper NVIDIA GPUs (Turing/sm75, Ampere/sm86, Ada Lovelace/sm89), packaged as a Claude Code skill."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = { file = "LICENSE" }
+dependencies = [
+    "PyYAML>=6.0",
+]
+
+[tool.uv]
+# No additional dev dependencies: the validation/index/query tooling and its
+# tests use only the standard library plus PyYAML, mirroring the reference
+# knowledge base's deliberate dependency minimalism.
+package = false

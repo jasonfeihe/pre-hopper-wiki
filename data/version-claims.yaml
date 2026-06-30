@@ -1,0 +1,8 @@
+## Version-Claims Registry — central side of the version-sensitivity model.
+##
+## When a wiki page makes a tool-version-dependent capability claim (e.g. "this
+## Triton lowering path landed in Triton X.Y"), it carries a
+## `version_sensitive: <vs-id>` pointer that resolves to an entry here. This KB
+## starts with no such claims; the empty `claims: []` list is the valid stub
+## the validator expects to exist.
+claims: []

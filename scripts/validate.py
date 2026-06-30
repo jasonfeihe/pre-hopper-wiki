@@ -1,0 +1,414 @@
+#!/usr/bin/env python3
+"""Validate the pre-Hopper kernel wiki against its schema and controlled vocabulary.
+
+Checks performed:
+  1. Required data files exist (data/schemas.yaml, data/tags.yaml,
+     data/version-claims.yaml) — missing files are a hard error, not a silent pass.
+  2. Every sources/*.md and wiki/*.md page has parseable YAML frontmatter.
+  3. Each page maps to a known page type; its required fields are present and it
+     carries no unknown fields.
+  4. Controlled-vocabulary fields (architectures, tags, hardware_features,
+     techniques, kernel_types, languages, confidence, reproducibility,
+     source_category) only use values enumerated in data/tags.yaml. In
+     particular, out-of-scope architectures (anything other than the enumerated
+     sm75/sm86/sm89) are rejected.
+  5. Page ids are unique and carry the id-prefix their page type requires.
+  6. Link integrity: every id referenced in `sources:` and `related:` resolves
+     to an existing page id.
+  7. Per-type constraints (id_prefix, type literal, allowed source_category,
+     reproducibility_minimum, merge_sha-when-merged).
+  8. wiki/*.md pages live under a recognized type subdirectory.
+  9. data/version-claims.yaml and data/refresh-cutoff.yaml conform to their
+     registry schemas.
+
+There is deliberately NO "Blackwell-first" / `blackwell_relevance` rule: this
+knowledge base is pre-Hopper-scoped, and no page type requires a relevance
+field. A neutral, optional `scope_relevance` field is accepted where the schema
+lists it.
+
+Exit code 0 on success, 1 on any validation error.
+
+Usage:
+    validate.py            # validate the whole knowledge base
+    validate.py --root DIR # validate a specific root (overrides autodetection)
+"""
+
+from __future__ import annotations
+
+import argparse
+import re
+import sys
+from collections import defaultdict
+from pathlib import Path
+
+import yaml
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _wiki_root import resolve_wiki_root, WIKI_ROOT as _DEFAULT_ROOT  # noqa: E402
+
+# Controlled-vocabulary frontmatter fields whose list/scalar values must be
+# enumerated in data/tags.yaml. Maps the frontmatter key -> the tags.yaml key.
+LIST_VOCAB_FIELDS = {
+    "architectures": "architectures",
+    "tags": None,  # tags are validated against the union of several vocab sets
+    "hardware_features": "hardware_features",
+    "techniques": "techniques",
+    "kernel_types": "kernel_types",
+    "languages": "languages",
+}
+SCALAR_VOCAB_FIELDS = {
+    "confidence": "confidence",
+    "reproducibility": "reproducibility",
+    "source_category": "source_categories",
+}
+
+# The reproducibility ladder, ordered weakest -> strongest, for enforcing
+# `reproducibility_minimum` constraints.
+REPRO_LADDER = ["concept", "pseudocode", "snippet", "runnable", "benchmarked"]
+
+# Recognized wiki subdirectories (a wiki/*.md page must live under one of these).
+WIKI_TYPE_DIRS = {
+    "hardware", "techniques", "kernels", "patterns", "languages", "migration",
+}
+
+
+def load_yaml(path: Path):
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+def split_frontmatter(content: str):
+    """Return (frontmatter_dict_or_None, parse_ok). parse_ok is False when the
+    document has no frontmatter block or the block is not a YAML mapping."""
+    m = re.match(r"^---\s*\r?\n(.*?)\r?\n---\s*\r?\n?(.*)", content, re.DOTALL)
+    if not m:
+        return None, False
+    try:
+        fm = yaml.safe_load(m.group(1))
+    except yaml.YAMLError:
+        return None, False
+    if not isinstance(fm, dict):
+        return None, False
+    return fm, True
+
+
+def detect_page_type(fm: dict, rel_path: str):
+    """Return the schema key for a page, or None if it cannot be determined.
+
+    wiki pages declare their kind via the `type` field (-> wiki-<type>).
+    sources pages are typed by their subdirectory (sources/docs -> source-doc).
+    """
+    parts = rel_path.split("/")
+    if parts[0] == "wiki":
+        t = fm.get("type")
+        if isinstance(t, str):
+            return f"wiki-{t}"
+        return None
+    if parts[0] == "sources" and len(parts) > 1:
+        # sources/docs -> source-doc, sources/prs -> source-pr, etc.
+        return f"source-{parts[1].rstrip('s')}"
+    return None
+
+
+class Validator:
+    def __init__(self, root: Path):
+        self.root = root
+        self.errors: list[str] = []
+        self.schemas = {}
+        self.tags = {}
+        self.pages = []          # list of (rel_path, fm)
+        self.ids = {}            # id -> rel_path
+        self._vocab_cache = {}
+
+    def err(self, msg: str):
+        self.errors.append(msg)
+
+    # ---- loading -------------------------------------------------------
+
+    def load_required_data(self) -> bool:
+        ok = True
+        schemas_path = self.root / "data" / "schemas.yaml"
+        tags_path = self.root / "data" / "tags.yaml"
+        vclaims_path = self.root / "data" / "version-claims.yaml"
+
+        if not schemas_path.is_file():
+            self.err("data/schemas.yaml: missing (required)")
+            ok = False
+        if not tags_path.is_file():
+            self.err("data/tags.yaml: missing (required)")
+            ok = False
+        if not vclaims_path.is_file():
+            self.err("data/version-claims.yaml: missing (required registry stub)")
+            ok = False
+        if not ok:
+            return False
+
+        try:
+            self.schemas = load_yaml(schemas_path) or {}
+        except yaml.YAMLError as e:
+            self.err(f"data/schemas.yaml: unparseable ({e})")
+            return False
+        try:
+            self.tags = load_yaml(tags_path) or {}
+        except yaml.YAMLError as e:
+            self.err(f"data/tags.yaml: unparseable ({e})")
+            return False
+        return True
+
+    def vocab(self, tags_key: str) -> set:
+        if tags_key not in self._vocab_cache:
+            self._vocab_cache[tags_key] = set(self.tags.get(tags_key, []) or [])
+        return self._vocab_cache[tags_key]
+
+    def all_tag_vocab(self) -> set:
+        """Union of every vocabulary set a free `tags` value may legitimately
+        draw from."""
+        out = set()
+        for key in ("hardware_features", "techniques", "kernel_types",
+                    "languages", "architectures"):
+            out |= self.vocab(key)
+        return out
+
+    def collect_pages(self):
+        for subdir in ("sources", "wiki"):
+            base = self.root / subdir
+            if not base.exists():
+                continue
+            for md in sorted(base.rglob("*.md")):
+                rel = md.relative_to(self.root).as_posix()
+                content = md.read_text(encoding="utf-8")
+                fm, ok = split_frontmatter(content)
+                if not ok:
+                    self.err(f"{rel}: missing or unparseable YAML frontmatter")
+                    continue
+                self.pages.append((rel, fm))
+
+    # ---- per-page validation ------------------------------------------
+
+    def validate_page(self, rel: str, fm: dict):
+        parts = rel.split("/")
+
+        # wiki pages must live under a recognized type subdirectory.
+        if parts[0] == "wiki":
+            if len(parts) < 3 or parts[1] not in WIKI_TYPE_DIRS:
+                self.err(
+                    f"{rel}: wiki page is not under a recognized type "
+                    f"subdirectory ({sorted(WIKI_TYPE_DIRS)})"
+                )
+                return
+
+        ptype = detect_page_type(fm, rel)
+        if ptype is None or ptype not in self.schemas:
+            self.err(f"{rel}: cannot determine a known page type (got {ptype!r})")
+            return
+
+        schema = self.schemas[ptype]
+        required = set(schema.get("required", []))
+        optional = set(schema.get("optional", []))
+        allowed = required | optional
+        constraints = schema.get("constraints", {}) or {}
+
+        # Required fields present. A required field must have its key present
+        # and a non-null/non-empty-string value; empty LISTS are allowed for
+        # most fields (e.g. `related: []`). The `sources` field is special: a
+        # wiki page must cite at least one source, so an empty sources list is
+        # rejected (see AC-8). This mirrors the reference KB's "every synthesized
+        # page is sourced" contract.
+        for field in sorted(required):
+            present = field in fm and fm[field] not in (None, "", {})
+            if not present:
+                self.err(f"{rel}: missing required field '{field}' for {ptype}")
+            elif field == "sources" and ptype.startswith("wiki-") and fm[field] == []:
+                self.err(f"{rel}: wiki page must cite at least one source (sources is empty)")
+
+        # No unknown fields (version_sensitive pointer is always allowed).
+        for field in fm:
+            if field not in allowed and field != "version_sensitive":
+                self.err(f"{rel}: unknown field '{field}' for {ptype}")
+
+        # id prefix + uniqueness.
+        pid = fm.get("id")
+        if isinstance(pid, str):
+            prefix = constraints.get("id_prefix")
+            if prefix and not pid.startswith(prefix):
+                self.err(f"{rel}: id '{pid}' must start with '{prefix}' for {ptype}")
+            if pid in self.ids:
+                self.err(f"{rel}: duplicate id '{pid}' (also in {self.ids[pid]})")
+            else:
+                self.ids[pid] = rel
+
+        # type literal.
+        if "type" in constraints and fm.get("type") != constraints["type"]:
+            self.err(
+                f"{rel}: type '{fm.get('type')}' does not match required "
+                f"'{constraints['type']}' for {ptype}"
+            )
+
+        # source_category constraint.
+        if "source_category" in constraints:
+            allowed_cats = constraints["source_category"]
+            if isinstance(allowed_cats, str):
+                allowed_cats = [allowed_cats]
+            if fm.get("source_category") not in allowed_cats:
+                self.err(
+                    f"{rel}: source_category '{fm.get('source_category')}' not in "
+                    f"{allowed_cats} for {ptype}"
+                )
+
+        # merge_sha required when merged.
+        if constraints.get("merge_sha_required_when") == "status == merged":
+            if fm.get("status") == "merged" and not fm.get("merge_sha"):
+                self.err(f"{rel}: status is 'merged' but merge_sha is missing")
+
+        # reproducibility minimum.
+        rmin = constraints.get("reproducibility_minimum")
+        if rmin and fm.get("reproducibility") in REPRO_LADDER:
+            if REPRO_LADDER.index(fm["reproducibility"]) < REPRO_LADDER.index(rmin):
+                self.err(
+                    f"{rel}: reproducibility '{fm['reproducibility']}' is below the "
+                    f"minimum '{rmin}' for {ptype}"
+                )
+
+        # Controlled-vocabulary list fields.
+        for field, tags_key in LIST_VOCAB_FIELDS.items():
+            if field not in fm:
+                continue
+            values = fm[field]
+            if not isinstance(values, list):
+                self.err(f"{rel}: field '{field}' must be a list")
+                continue
+            valid = self.all_tag_vocab() if tags_key is None else self.vocab(tags_key)
+            for v in values:
+                if v not in valid:
+                    if field == "architectures":
+                        self.err(
+                            f"{rel}: architecture '{v}' is out of scope / not in "
+                            f"data/tags.yaml architectures {sorted(self.vocab('architectures'))}"
+                        )
+                    else:
+                        self.err(
+                            f"{rel}: {field} value '{v}' is not in the controlled "
+                            f"vocabulary (data/tags.yaml)"
+                        )
+
+        # from_arch / to_arch (migration pages) must be enumerated architectures.
+        for field in ("from_arch", "to_arch"):
+            if field in fm and fm[field] not in self.vocab("architectures"):
+                self.err(
+                    f"{rel}: {field} '{fm[field]}' is out of scope / not in "
+                    f"data/tags.yaml architectures"
+                )
+
+        # Scalar vocabulary fields.
+        for field, tags_key in SCALAR_VOCAB_FIELDS.items():
+            if field in fm and fm[field] is not None:
+                if fm[field] not in self.vocab(tags_key):
+                    self.err(
+                        f"{rel}: {field} '{fm[field]}' is not in the controlled "
+                        f"vocabulary (data/tags.yaml {tags_key})"
+                    )
+
+    def validate_links(self):
+        """sources: and related: ids must resolve to a known page id."""
+        for rel, fm in self.pages:
+            for field in ("sources", "related"):
+                refs = fm.get(field)
+                if not refs:
+                    continue
+                if not isinstance(refs, list):
+                    self.err(f"{rel}: field '{field}' must be a list of ids")
+                    continue
+                for ref in refs:
+                    if ref not in self.ids:
+                        self.err(
+                            f"{rel}: {field} references unknown id '{ref}'"
+                        )
+
+    # ---- data registries ----------------------------------------------
+
+    def validate_version_claims(self):
+        path = self.root / "data" / "version-claims.yaml"
+        try:
+            data = load_yaml(path)
+        except yaml.YAMLError as e:
+            self.err(f"data/version-claims.yaml: unparseable ({e})")
+            return
+        if not isinstance(data, dict) or "claims" not in data:
+            self.err("data/version-claims.yaml: missing required key 'claims'")
+            return
+        claims = data.get("claims")
+        if claims is None:
+            return  # `claims:` with no value is an acceptable empty stub
+        if not isinstance(claims, list):
+            self.err("data/version-claims.yaml: 'claims' must be a list")
+            return
+        schema = self.schemas.get("version-claims-registry", {})
+        claim_schema = schema.get("claim_schema", {})
+        req = set(claim_schema.get("required", []))
+        for i, claim in enumerate(claims):
+            if not isinstance(claim, dict):
+                self.err(f"data/version-claims.yaml: claim #{i} is not a mapping")
+                continue
+            for field in sorted(req):
+                if field not in claim:
+                    self.err(
+                        f"data/version-claims.yaml: claim "
+                        f"'{claim.get('id', i)}' missing required field '{field}'"
+                    )
+
+    def validate_refresh_cutoff(self):
+        path = self.root / "data" / "refresh-cutoff.yaml"
+        if not path.is_file():
+            return  # optional file; AC-2/AC-9 create it but validator does not require it
+        try:
+            data = load_yaml(path)
+        except yaml.YAMLError as e:
+            self.err(f"data/refresh-cutoff.yaml: unparseable ({e})")
+            return
+        if not isinstance(data, dict) or "cutoff_date" not in data:
+            self.err("data/refresh-cutoff.yaml: missing required key 'cutoff_date'")
+            return
+        if not re.match(r"^\d{4}-\d{2}-\d{2}$", str(data["cutoff_date"])):
+            self.err(
+                f"data/refresh-cutoff.yaml: cutoff_date "
+                f"'{data['cutoff_date']}' is not an ISO date (YYYY-MM-DD)"
+            )
+
+    # ---- driver --------------------------------------------------------
+
+    def run(self) -> int:
+        if not self.load_required_data():
+            self._report()
+            return 1
+        self.collect_pages()
+        for rel, fm in self.pages:
+            self.validate_page(rel, fm)
+        self.validate_links()
+        self.validate_version_claims()
+        self.validate_refresh_cutoff()
+        return self._report()
+
+    def _report(self) -> int:
+        if self.errors:
+            print(f"VALIDATION FAILED: {len(self.errors)} error(s)")
+            for e in self.errors:
+                print(f"  - {e}")
+            return 1
+        print(f"VALIDATION OK: {len(self.pages)} page(s) validated, 0 errors")
+        return 0
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Validate the pre-Hopper kernel wiki")
+    parser.add_argument("--root", help="Knowledge-base root (default: autodetect)")
+    args = parser.parse_args()
+
+    if args.root:
+        root = Path(args.root).expanduser().resolve()
+    else:
+        root = _DEFAULT_ROOT
+
+    sys.exit(Validator(root).run())
+
+
+if __name__ == "__main__":
+    main()

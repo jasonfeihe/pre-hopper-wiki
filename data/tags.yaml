@@ -1,0 +1,114 @@
+## Controlled Vocabulary — Tags
+## All tags used in source and wiki frontmatter must appear here.
+## The validator (scripts/validate.py) rejects unknown tags.
+##
+## Scope: pre-Hopper NVIDIA GPUs only.
+##   sm75 — Turing  (T4)
+##   sm86 — Ampere  (A10)            [note: A100 is sm80 and is OUT OF SCOPE]
+##   sm89 — Ada Lovelace (L20, L40)
+##
+## A feature appearing in `hardware_features` is valid vocabulary for the KB;
+## whether a given feature applies to a given architecture is decided per page
+## via that page's `architectures` field (e.g. cp.async is Ampere+; it must not
+## be claimed on an sm75-only page).
+
+architectures:
+  - sm75
+  - sm86
+  - sm89
+
+hardware_features:
+  # Tensor Core / MMA path
+  - tensor-core            # Turing 2nd-gen, Ampere 3rd-gen, Ada 4th-gen Tensor Cores
+  - mma-sync               # PTX mma.sync.* warp-level MMA (Turing+; canonical for the dotted form mma.sync)
+  - wmma                   # CUDA C++ nvcuda::wmma warp-matrix API (Turing+)
+  - ldmatrix               # ldmatrix shared->register matrix load (Turing+)
+  - cp-async               # cp.async asynchronous global->shared copy (Ampere sm80+; NOT Turing)
+  - async-copy             # general asynchronous copy pipeline concept (Ampere+)
+  - shared-memory          # on-chip shared memory / SMEM capacity & banking
+  - l2-cache-residency     # Ampere+ L2 residency control (cudaAccessProperty)
+  - tf32                   # TF32 tensor-core input type (Ampere+)
+  - bf16                   # bfloat16 (Ampere+)
+  - fp16                   # half precision (Turing+)
+  - int8                   # INT8 tensor-core path (Turing+)
+  - int4                   # INT4 tensor-core path (Turing; deprecated later)
+  - fp8                    # FP8 E4M3/E5M2 tensor-core path (Ada sm89+)
+  - dp4a                   # DP4A INT8 dot-product (Turing/Ampere CUDA-core path)
+  - warp-shuffle           # warp shuffle / __shfl_sync intra-warp exchange
+  - async-barrier          # mbarrier / arrive-wait barrier (Ampere+)
+  - independent-thread-scheduling  # Volta+/Turing independent thread scheduling
+
+techniques:
+  - warp-specialization
+  - persistent-kernel
+  - swizzling
+  - pipeline-stages
+  - double-buffering
+  - software-pipelining
+  - register-reuse
+  - register-budgeting
+  - shared-memory-optimization
+  - bank-conflict-avoidance
+  - epilogue-fusion
+  - kernel-fusion
+  - tile-scheduling
+  - split-k
+  - stream-k
+  - loop-unrolling
+  - vectorized-loads
+  - cache-policy
+  - occupancy-tuning
+  - data-reuse
+  - quantization
+  - fine-grained-quantization
+
+kernel_types:
+  - gemm
+  - gemv
+  - grouped-gemm
+  - batched-gemm
+  - attention
+  - flash-attention
+  - conv
+  - reduction
+  - scan
+  - sort
+  - elementwise
+  - normalization
+  - quantization
+  - fused-kernel
+
+languages:
+  - cuda-cpp
+  - ptx
+  - triton
+  - cutlass
+  - python
+
+confidence:
+  - verified
+  - source-reported
+  - inferred
+  - experimental
+
+reproducibility:
+  - concept
+  - pseudocode
+  - snippet
+  - runnable
+  - benchmarked
+
+source_categories:
+  - official-doc
+  - upstream-code
+  - paper
+  - benchmark-blog
+  - community-note
+
+evidence_types:
+  - official-doc
+  - upstream-code
+  - paper
+  - benchmark
+  - reproduction
+  - inference

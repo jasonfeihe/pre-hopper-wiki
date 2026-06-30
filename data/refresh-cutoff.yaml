@@ -1,0 +1,13 @@
+## Incremental-update baseline for the Pre-Hopper Kernel Wiki.
+##
+## `cutoff_date` records the date through which the corpus has been
+## deliberately reviewed for this knowledge base. It is a FRESH baseline for
+## this repository (not inherited from any other knowledge base). The corpus is
+## append-only and not frozen: later rounds add sources/pages and advance this
+## date. See references/incremental-updates.md for the full add-a-page workflow
+## and the semantics of this field.
+cutoff_date: '2026-06-30'
+notes: >-
+  Initial baseline established when the knowledge base was scaffolded. Adding
+  new sources/pages does not require changing this date; advancing it records a
+  new deliberate review round.

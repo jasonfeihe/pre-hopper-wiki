@@ -1,0 +1,248 @@
+## Page-Type Schemas — Pre-Hopper Kernel Wiki
+## Defines required and optional fields per page type.
+## Consumed by scripts/validate.py
+##
+## Design lineage: the page-type taxonomy and id-prefix conventions mirror the
+## reference knowledge base (~/rd/auto-cuda/KernelWiki) for architectural
+## parity, but this schema is original and pre-Hopper-scoped. Notably:
+##   * No page type requires a `blackwell_relevance` field.
+##   * Wiki page types accept an OPTIONAL neutral `scope_relevance` field
+##     (free-text justification of why a page belongs in this KB's scope).
+##   * Operational/ingestion page types (PR-skip audits, asset-bundle
+##     provenance, core-PR ledgers) are intentionally omitted from this loop.
+
+source-doc:
+  required:
+    - id
+    - title
+    - url
+    - source_category
+    - architectures
+    - tags
+    - retrieved_at
+  optional:
+    - author
+    - description
+    - scope_relevance
+  constraints:
+    id_prefix: doc-
+    source_category: [official-doc, paper]
+
+source-blog:
+  required:
+    - id
+    - title
+    - author
+    - url
+    - source_category
+    - architectures
+    - tags
+    - retrieved_at
+  optional:
+    - description
+    - scope_relevance
+  constraints:
+    id_prefix: blog-
+    source_category: [benchmark-blog, community-note]
+
+source-pr:
+  required:
+    - id
+    - repo
+    - pr
+    - title
+    - author
+    - date
+    - url
+    - source_category
+    - architectures
+    - tags
+    - captured_at
+    - status
+  optional:
+    - merge_sha
+    - description
+    - inclusion_reason
+    - techniques
+    - hardware_features
+    - kernel_types
+    - languages
+    - scope_relevance
+  constraints:
+    id_prefix: pr-
+    source_category: upstream-code
+    status: [open, merged, closed]
+    merge_sha_required_when: "status == merged"
+
+source-contest:
+  required:
+    - id
+    - title
+    - source_category
+    - architectures
+    - tags
+  optional:
+    - url
+    - description
+    - scope_relevance
+  constraints:
+    id_prefix: contest-
+    source_category: community-note
+
+wiki-hardware:
+  required:
+    - id
+    - title
+    - type
+    - architectures
+    - tags
+    - confidence
+    - related
+    - sources
+  optional:
+    - aliases
+    - reproducibility
+    - prerequisites
+    - hardware_features
+    - evidence_basis
+    - scope_relevance
+  constraints:
+    type: hardware
+    id_prefix: hw-
+
+wiki-technique:
+  required:
+    - id
+    - title
+    - type
+    - architectures
+    - tags
+    - confidence
+    - reproducibility
+    - prerequisites
+    - related
+    - sources
+  optional:
+    - aliases
+    - symptoms
+    - techniques
+    - hardware_features
+    - evidence_basis
+    - scope_relevance
+  constraints:
+    type: technique
+    id_prefix: technique-
+    reproducibility_minimum: snippet
+
+wiki-pattern:
+  required:
+    - id
+    - title
+    - type
+    - tags
+    - symptoms
+    - candidate_techniques
+    - related
+    - sources
+  optional:
+    - architectures
+    - confidence
+    - scope_relevance
+  constraints:
+    type: pattern
+    id_prefix: pattern-
+
+wiki-kernel:
+  required:
+    - id
+    - title
+    - type
+    - architectures
+    - tags
+    - confidence
+    - reproducibility
+    - kernel_types
+    - languages
+    - related
+    - sources
+  optional:
+    - aliases
+    - prerequisites
+    - symptoms
+    - hardware_features
+    - performance_claims
+    - evidence_basis
+    - scope_relevance
+  constraints:
+    type: kernel
+    id_prefix: kernel-
+    reproducibility_minimum: snippet
+
+wiki-language:
+  required:
+    - id
+    - title
+    - type
+    - tags
+    - related
+    - sources
+    - reproducibility
+  optional:
+    - architectures
+    - confidence
+    - aliases
+    - evidence_basis
+    - scope_relevance
+  constraints:
+    type: language
+    id_prefix: lang-
+    reproducibility_minimum: snippet
+
+wiki-migration:
+  required:
+    - id
+    - title
+    - type
+    - from_arch
+    - to_arch
+    - tags
+    - related
+    - sources
+  optional:
+    - confidence
+    - reproducibility
+    - prerequisites
+    - scope_relevance
+  constraints:
+    type: migration
+    id_prefix: migration-
+
+## data/version-claims.yaml registry. A stub (`claims: []`) is valid; entries
+## are added when a page makes a tool-version-dependent capability claim.
+version-claims-registry:
+  required:
+    - claims
+  claim_schema:
+    required:
+      - id
+      - tool
+      - claim_valid_for
+      - last_verified_release
+      - last_verified_at
+      - applies_to
+      - source_ids
+    optional:
+      - notes
+    constraints:
+      tool: [triton, cutlass, cuda, ptx, python]
+      applies_to_required_min: 1
+      source_ids_required_min: 1
+      id_prefix: vs-
+
+## data/refresh-cutoff.yaml. Single-field record of the incremental-update
+## baseline date. See references/incremental-updates.md for semantics.
+refresh-cutoff:
+  required:
+    - cutoff_date
+  optional:
+    - notes

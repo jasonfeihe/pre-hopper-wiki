@@ -82,73 +82,154 @@ def _token_spans(haystack: str, token_lower: str) -> list[int]:
     return [m.start() for m in _token_regex(token_lower).finditer(haystack)]
 
 
-def _occurrence_guarded(haystack: str, pos: int, token_lower: str, markers: list[str],
-                        other_arch_tokens: list[str] | None = None) -> bool:
-    """True if THIS occurrence sits inside a capability-guard context.
-
-    The window is the clause containing the token (bounded by . ; newline). A
-    capability guard often trails the arch token into the NEXT clause
-    ('Turing (sm75). Not supported; fall back ...'), so we extend into the
-    immediately-following clause — BUT only when that next clause does not name a
-    DIFFERENT architecture. If the trailing guard mentions another arch token
-    (e.g. 'Adds optimized sm89 kernel. Not supported on sm75.'), the guard
-    belongs to that other arch, so it must NOT taint this token's mention. The
-    look-behind stays clause-local so an earlier guard about a different arch
-    never taints this mention either."""
-    token_len = len(token_lower)
-    start = max((haystack.rfind(ch, 0, pos) for ch in ".;\n"), default=-1) + 1
-    end_candidates = [haystack.find(ch, pos + token_len) for ch in ".;\n"]
-    end_candidates = [e for e in end_candidates if e != -1]
-    clause_end = min(end_candidates) if end_candidates else len(haystack)
-
-    clause = haystack[start:clause_end]
-    if any(m in clause for m in markers):
-        return True
-
-    # Trailing-guard look-ahead into the next clause, gated on it not naming a
-    # different architecture.
-    lookahead = haystack[clause_end: clause_end + 80]
-    if any(m in lookahead for m in markers):
-        names_other_arch = any(
-            other.lower() != token_lower and _token_spans(lookahead, other.lower())
-            for other in (other_arch_tokens or [])
-        )
-        if not names_other_arch:
-            return True
-    return False
+def _token_arch_map(policy: dict) -> dict[str, str]:
+    """Map every architecture/device token (lowercased) the policy knows to its
+    architecture: positive tiers map to an in-scope sm; out-of-scope tokens map
+    to a synthetic 'oos:<reason>' arch so they are distinguishable from in-scope
+    archs during guard attribution."""
+    out: dict[str, str] = {}
+    for tier in policy.get("evidence_tiers", []):
+        for tok, arch in (tier.get("maps_to", {}) or {}).items():
+            out.setdefault(tok.lower(), arch)
+    for tok, reason in (policy.get("out_of_scope_arch_tokens", {}) or {}).items():
+        out.setdefault(tok.lower(), f"oos:{reason}")
+    return out
 
 
-def _has_clean_mention(haystack: str, token_lower: str, markers: list[str],
-                       other_arch_tokens: list[str] | None = None) -> bool:
-    """True when token occurs at a word boundary at least once OUTSIDE any
-    capability-guard clause."""
-    spans = _token_spans(haystack, token_lower)
-    if not spans:
+# --- Capability-guard attribution (segment-based) --------------------------
+#
+# A capability-guard marker ("not supported", "fall back", "requires sm", ...)
+# guards the architecture it grammatically governs. Attribution is scoped to the
+# marker's own HARD SEGMENT (split on '.', ';', newline — NOT comma):
+#   * within the segment, the marker governs the nearest arch token AFTER it
+#     ("not supported on sm75"); if none, the nearest arch BEFORE it
+#     ("sm75 not supported");
+#   * a marker in a segment with NO arch token carries back one step to the
+#     immediately-previous non-empty segment only if that segment names exactly
+#     one architecture ("Turing (sm75). Not supported").
+# An occurrence is guarded iff some marker attribution targets its (segment, arch);
+# an architecture is CLEAN iff any of its occurrences is unguarded. Comparing by
+# architecture (not token) means synonyms like 'turing'/'sm75' are treated as one.
+# This design and its case coverage were cross-checked with Codex.
+
+_HARD_BOUNDARIES = ".;\n"
+
+
+def _hard_segments(text: str) -> list[tuple[int, int]]:
+    """Return (start, end) spans split on . ; newline."""
+    segs = []
+    start = 0
+    for i, ch in enumerate(text):
+        if ch in _HARD_BOUNDARIES:
+            if start < i:
+                segs.append((start, i))
+            start = i + 1
+    if start < len(text):
+        segs.append((start, len(text)))
+    return segs
+
+
+def _seg_id(offset: int, segments: list[tuple[int, int]]) -> int:
+    for sid, (s, e) in enumerate(segments):
+        if s <= offset < e:
+            return sid
+    return -1
+
+
+def _guarded_segment_archs(haystack: str, token_arch_map: dict[str, str],
+                           markers: list[str]) -> set[tuple[int, str]]:
+    """Return the set of (segment_id, architecture) pairs that a capability guard
+    attributes to. Any arch-token occurrence whose (segment, arch) is in this set
+    is guarded."""
+    segments = _hard_segments(haystack)
+    # All arch-token occurrences: (start, end, arch, seg_id).
+    token_occs = []
+    for tok, arch in token_arch_map.items():
+        for off in _token_spans(haystack, tok):
+            token_occs.append((off, off + len(tok), arch, _seg_id(off, segments)))
+    tokens_by_seg: dict[int, list] = {}
+    for occ in token_occs:
+        tokens_by_seg.setdefault(occ[3], []).append(occ)
+
+    # All marker occurrences: (start, end, seg_id).
+    marker_occs = []
+    for m in markers:
+        mstart = 0
+        while True:
+            i = haystack.find(m, mstart)
+            if i == -1:
+                break
+            marker_occs.append((i, i + len(m), _seg_id(i, segments)))
+            mstart = i + len(m)
+
+    guarded: set[tuple[int, str]] = set()
+    for mstart, mend, sid in marker_occs:
+        seg_tokens = tokens_by_seg.get(sid, [])
+        governed_arch = None
+        target_sid = sid
+        if seg_tokens:
+            # nearest arch AFTER the marker (incl. a token whose right part the
+            # marker overlaps, e.g. 'requires sm' + 'sm75'); else nearest BEFORE.
+            after = [t for t in seg_tokens if t[0] >= mstart]
+            if after:
+                governed_arch = min(after, key=lambda t: (t[0], t[1]))[2]
+            else:
+                before = [t for t in seg_tokens if t[1] <= mstart]
+                if before:
+                    governed_arch = max(before, key=lambda t: (t[1], t[0]))[2]
+        else:
+            # Orphan marker segment: carry back one step to a single-arch segment.
+            prev = sid - 1
+            while prev >= 0 and not tokens_by_seg.get(prev):
+                prev -= 1
+            if prev >= 0:
+                prev_arches = {t[2] for t in tokens_by_seg.get(prev, [])}
+                if len(prev_arches) == 1:
+                    governed_arch = next(iter(prev_arches))
+                    target_sid = prev
+        if governed_arch is not None:
+            guarded.add((target_sid, governed_arch))
+    return guarded
+
+
+def _arch_occurrences(haystack: str, arch: str, token_arch_map: dict[str, str],
+                      segments: list[tuple[int, int]]) -> list[tuple[int, str]]:
+    """(offset, seg_id) for every token occurrence that maps to `arch`."""
+    out = []
+    for tok, a in token_arch_map.items():
+        if a != arch:
+            continue
+        for off in _token_spans(haystack, tok):
+            out.append((off, _seg_id(off, segments)))
+    return out
+
+
+def _is_arch_clean(haystack: str, arch: str, markers: list[str],
+                   token_arch_map: dict[str, str]) -> bool:
+    """True when `arch` is mentioned and at least one of its occurrences is not
+    guarded by a capability marker."""
+    segments = _hard_segments(haystack)
+    occs = _arch_occurrences(haystack, arch, token_arch_map, segments)
+    if not occs:
         return False
     if not markers:
         return True
-    return any(not _occurrence_guarded(haystack, pos, token_lower, markers, other_arch_tokens)
-               for pos in spans)
+    guarded = _guarded_segment_archs(haystack, token_arch_map, markers)
+    return any((sid, arch) not in guarded for _, sid in occs)
 
 
-def _only_guarded_mention(haystack: str, token_lower: str, markers: list[str],
-                          other_arch_tokens: list[str] | None = None) -> bool:
-    """True when token occurs (at a boundary) but every occurrence is guarded."""
-    spans = _token_spans(haystack, token_lower)
-    if not spans:
+def _is_arch_only_guarded(haystack: str, arch: str, markers: list[str],
+                          token_arch_map: dict[str, str]) -> bool:
+    """True when `arch` is mentioned but every occurrence is guarded."""
+    segments = _hard_segments(haystack)
+    occs = _arch_occurrences(haystack, arch, token_arch_map, segments)
+    if not occs:
         return False
-    return all(_occurrence_guarded(haystack, pos, token_lower, markers, other_arch_tokens)
-               for pos in spans)
+    guarded = _guarded_segment_archs(haystack, token_arch_map, markers)
+    return all((sid, arch) in guarded for _, sid in occs)
 
 
-def _all_arch_tokens(policy: dict) -> list[str]:
-    """Every architecture/device token the policy knows (positive tiers +
-    out-of-scope), used to detect when a trailing guard names a DIFFERENT arch."""
-    tokens = []
-    for tier in policy.get("evidence_tiers", []):
-        tokens.extend((tier.get("maps_to", {}) or {}).keys())
-    tokens.extend((policy.get("out_of_scope_arch_tokens", {}) or {}).keys())
-    return tokens
+
 
 
 def classify(candidate: dict, policy: dict, in_scope_archs: set[str] | None = None) -> dict:
@@ -161,7 +242,7 @@ def classify(candidate: dict, policy: dict, in_scope_archs: set[str] | None = No
     paths = _changed_paths(candidate)
     skip_reasons = policy.get("skip_reasons", {})
     markers = [m.lower() for m in (policy.get("capability_guard_markers") or [])]
-    arch_tokens = _all_arch_tokens(policy)
+    token_arch_map = _token_arch_map(policy)
     globs = policy.get("non_kernel_path_globs", {}) or {}
     kernel_exts = tuple(globs.get("kernel_path_extensions", []))
     ambiguous_exts = tuple(globs.get("ambiguous_path_extensions", []))
@@ -199,13 +280,24 @@ def classify(candidate: dict, policy: dict, in_scope_archs: set[str] | None = No
         return skip("non-kernel")
 
     # --- (2) collect clean in-scope evidence AND clean out-of-scope mentions --
+    # Compute the capability-guarded (segment, arch) set ONCE, then reuse it for
+    # both in-scope evidence and out-of-scope attribution. A token occurrence is
+    # clean when its (segment, arch) pair is not guarded; an architecture is
+    # included when ANY of its occurrences (across synonymous tokens) is clean.
+    segments = _hard_segments(haystack)
+    guarded = _guarded_segment_archs(haystack, token_arch_map, markers)
+
+    def _token_has_clean(token_lower: str, arch: str) -> bool:
+        return any((_seg_id(off, segments), arch) not in guarded
+                   for off in _token_spans(haystack, token_lower))
+
     architectures: set[str] = set()
     evidence: list[dict] = []
     for tier in policy.get("evidence_tiers", []):
         for token, arch in (tier.get("maps_to", {}) or {}).items():
             if arch not in in_scope_archs:
                 continue
-            if _has_clean_mention(haystack, token.lower(), markers, arch_tokens):
+            if _token_has_clean(token.lower(), arch):
                 architectures.add(arch)
                 evidence.append({
                     "architecture": arch,
@@ -219,7 +311,8 @@ def classify(candidate: dict, policy: dict, in_scope_archs: set[str] | None = No
     for token, reason in oos.items():
         if _token_spans(haystack, token.lower()):
             oos_any.append((token, reason))
-            if _has_clean_mention(haystack, token.lower(), markers, arch_tokens):
+            oos_arch = token_arch_map.get(token.lower(), f"oos:{reason}")
+            if _token_has_clean(token.lower(), oos_arch):
                 oos_clean.append((token, reason))
 
     # --- (3) decision -------------------------------------------------------
@@ -244,11 +337,10 @@ def classify(candidate: dict, policy: dict, in_scope_archs: set[str] | None = No
         # Prefer a clean out-of-scope mention's reason; else any present one.
         return skip((oos_clean or oos_any)[0][1])
 
-    # An in-scope token present but ONLY as a capability guard / fallback.
-    for tier in policy.get("evidence_tiers", []):
-        for token, arch in (tier.get("maps_to", {}) or {}).items():
-            if arch in in_scope_archs and _only_guarded_mention(haystack, token.lower(), markers, arch_tokens):
-                return skip("capability-guard-only")
+    # An in-scope architecture present but ONLY as a capability guard / fallback.
+    for arch in sorted(in_scope_archs):
+        if _is_arch_only_guarded(haystack, arch, markers, token_arch_map):
+            return skip("capability-guard-only")
 
     # --- (4) nothing defensible ---------------------------------------------
     return skip("no-prehopper-evidence")

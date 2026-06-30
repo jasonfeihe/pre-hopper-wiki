@@ -153,6 +153,9 @@ def main():
                 "stage": "classify",
                 "reason": verdict["reason"],
                 "recorded_at": captured_at,
+                # The page this entry would occupy — removed below if it exists,
+                # so a verdict that flips include->skip never leaves a stale page.
+                "_page_path": root / "sources" / "prs" / entry["repo_slug"] / f"PR-{entry['pr']}.md",
             })
             continue
         errs = validate_page_fields(entry, verdict, vocabs, arch_vocab)
@@ -173,6 +176,9 @@ def main():
         for dest, _ in emitted:
             print(f"  would write {dest.relative_to(root)}")
         for row in skipped:
+            stale = row["_page_path"]
+            if stale.is_file():
+                print(f"  would REMOVE stale page {stale.relative_to(root)} (now {row['reason']})")
             print(f"  would skip-log {row['pr_id']} ({row['reason']})")
         print(f"Dry run: {len(emitted)} page(s), {len(skipped)} skip(s).")
         return
@@ -181,6 +187,19 @@ def main():
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text(page, encoding="utf-8")
         print(f"  wrote {dest.relative_to(root)}")
+
+    # A skip verdict must not leave a previously-generated page on disk: a PR
+    # cannot be both an included page and a skip-log entry. Remove any stale page
+    # for each skipped entry (and prune a now-empty repo dir).
+    for row in skipped:
+        stale = row.pop("_page_path")
+        if stale.is_file():
+            stale.unlink()
+            print(f"  removed stale page {stale.relative_to(root)} (now {row['reason']})")
+            try:
+                stale.parent.rmdir()  # only succeeds if now empty
+            except OSError:
+                pass
 
     # Merge skip rows into data/pr-page-skipped.yaml (sorted, deterministic).
     # A PR emitted as a page this run must NOT remain in the skip audit (it

@@ -161,6 +161,24 @@ class ClassifierTests(unittest.TestCase):
         self.assertEqual(v["decision"], "skip")
         self.assertEqual(v["reason"], "capability-guard-only")
 
+    def test_same_clause_comma_guard_does_not_taint_other_arch(self):
+        # R3 regression: a guard sharing the SAME hard segment (comma-joined)
+        # with a clean arch must attribute only to the arch it grammatically
+        # governs (sm75 after "not supported on"), leaving sm89 a clean include.
+        # Comma is NOT a hard boundary, so this exercises in-segment attribution.
+        v = self._verdict({"title": "Adds optimized sm89 kernel, not supported on sm75.",
+                           "changed_paths": ["x.cu"]})
+        self.assertEqual(v["decision"], "include")
+        self.assertEqual(v["architectures"], ["sm89"])
+
+    def test_a10g_device_maps_to_sm86(self):
+        # R3 regression: the A10G device name resolves to sm86 like the A10.
+        v = self._verdict({"title": "Tune A10G decode kernel",
+                           "body": "ldmatrix path for the A10G inference card.",
+                           "changed_paths": ["x.cu"]})
+        self.assertEqual(v["decision"], "include")
+        self.assertEqual(v["architectures"], ["sm86"])
+
 
 class GeneratorTests(unittest.TestCase):
     """generation from the committed seed manifest, offline."""
@@ -249,8 +267,42 @@ class GeneratorTests(unittest.TestCase):
             # And the skip reason is in the policy taxonomy -> repo still validates.
             self.assertEqual(run_script("validate.py", "--root", str(kb)).returncode, 0)
 
+    def test_skip_verdict_removes_stale_page(self):
+        # R3 regression: a PR that was previously an include (page on disk) and
+        # now classifies as skip must have its stale page REMOVED, not orphaned.
+        with tempfile.TemporaryDirectory() as d:
+            kb = _clone_kb(Path(d))
+            # First pass: an in-scope fixture produces a real page.
+            fx = kb / "tests" / "fixtures" / "seed" / "cutlass"
+            fx.mkdir(parents=True, exist_ok=True)
+            fixture = fx / "PR-9100.json"
+            fixture.write_text(json.dumps({
+                "number": 9100, "title": "Optimize sm89 L40 fp8 mma.sync kernel",
+                "changed_paths": ["a.cu"],
+            }), encoding="utf-8")
+            manifest = kb / "tests" / "fixtures" / "seed" / "seed-manifest.yaml"
+            data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+            data["entries"].append({
+                "repo_slug": "cutlass", "repo": "NVIDIA/cutlass", "pr": 9100,
+                "title": "Optimize sm89 L40 fp8 mma.sync kernel", "author": "x",
+                "date": "2025-01-01", "url": "https://example.com/9100",
+                "status": "merged", "merge_sha": "abc123",
+                "fixture": "tests/fixtures/seed/cutlass/PR-9100.json", "tags": [],
+            })
+            manifest.write_text(yaml.safe_dump(data), encoding="utf-8")
+            self.assertEqual(run_script("generate-pr-pages.py", "--root", str(kb)).returncode, 0)
+            page = kb / "sources" / "prs" / "cutlass" / "PR-9100.md"
+            self.assertTrue(page.exists(), "include should have produced a page")
 
-class RefreshTests(unittest.TestCase):
+            # Second pass: flip the fixture to Hopper-only so it now skips.
+            fixture.write_text(json.dumps({
+                "number": 9100, "title": "sm90 H100 wgmma only", "changed_paths": ["a.cu"],
+            }), encoding="utf-8")
+            self.assertEqual(run_script("generate-pr-pages.py", "--root", str(kb)).returncode, 0)
+            self.assertFalse(page.exists(), "skip must remove the stale include page")
+            self.assertEqual(run_script("validate.py", "--root", str(kb)).returncode, 0)
+
+
     """fixture-mode discovery, no network, idempotent, atomic."""
 
     def test_refresh_preserves_existing_decisions(self):

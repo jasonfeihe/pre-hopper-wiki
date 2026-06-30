@@ -1,0 +1,187 @@
+## Pre-Hopper Inclusion Policy
+## Consumed by scripts/classify_candidate.py and validated by scripts/validate.py
+## (the `inclusion-policy` schema entry in data/schemas.yaml).
+##
+## PURPOSE
+## A candidate PR earns a `source-pr` page ONLY when it carries DEFENSIBLE
+## evidence of optimizing for a pre-Hopper architecture in scope:
+##   sm75 (Turing / T4), sm86 (Ampere / A10), sm89 (Ada Lovelace / L20, L40).
+## Everything else is skip-logged with a taxonomy reason. Most 2025+ PRs in the
+## tracked repos target Hopper (sm90) / Blackwell (sm100); raw keyword hits
+## (e.g. "Turing" in a capability-guard / "not supported" string) are NOT
+## evidence of pre-Hopper optimization. This policy encodes that distinction.
+##
+## SCOPE DECISIONS (see .humanize/plan-2.md):
+##   * Architecture set is exactly {sm75, sm86, sm89}. sm80 / A100 is OUT OF
+##     SCOPE and is its own skip reason (`sm80-only`); it is never mapped to
+##     sm86. Widening is future work (FUT-4).
+##   * Domain scope is ALL GPU kernel optimization (DEC-4), incl. vector-search
+##     (cuVS): distance/top-k/IVF/PQ/graph-search kernels.
+
+schema_version: 1
+
+## ---------------------------------------------------------------------------
+## Positive architecture-evidence tiers (ordered strongest -> weakest).
+## The classifier admits an `include` verdict only when at least one tier
+## matches AND the matched architecture is in {sm75, sm86, sm89}. Each tier
+## records the `evidence_type` written into a page's architecture_evidence.
+## ---------------------------------------------------------------------------
+evidence_tiers:
+  - id: direct-sm-mention
+    description: >-
+      The PR title, body, or diff explicitly names an in-scope SM target
+      (sm_75/sm75, sm_86/sm86, sm_89/sm89, compute capability 7.5/8.6/8.9) as
+      the thing being optimized/added — not merely listed in a support matrix.
+    strength: strong
+    maps_to:
+      "sm_75": sm75
+      "sm75": sm75
+      "compute capability 7.5": sm75
+      "sm_86": sm86
+      "sm86": sm86
+      "compute capability 8.6": sm86
+      "sm_89": sm89
+      "sm89": sm89
+      "compute capability 8.9": sm89
+
+  - id: direct-device-mention
+    description: >-
+      The PR explicitly targets an in-scope device by marketing name as the
+      optimization target (T4, A10, L20, L40), or an unambiguous
+      microarchitecture-as-target (Turing/Ada when the kernel work is for it).
+      "Ampere" alone is weak because it spans sm80 (A100, out of scope) and
+      sm86 (A10); require an A10/sm86 disambiguator.
+    strength: strong
+    maps_to:
+      "T4": sm75
+      "Turing": sm75
+      "A10": sm86
+      "L20": sm89
+      "L40": sm89
+      "Ada Lovelace": sm89
+      "Ada": sm89
+
+  - id: arch-guard-codepath
+    description: >-
+      The diff adds/edits a compile-time or runtime architecture guard whose
+      taken branch implements kernel work for an in-scope SM. The token must be
+      a CONTEXT-BEARING guard form (e.g. __CUDA_ARCH__ == 750, arch::Sm89,
+      CUTLASS_ARCH_MMA_SM89), never a bare number, so an unrelated literal like
+      "increase buffer from 750 to 1024" is not mistaken for evidence.
+    strength: moderate
+    maps_to:
+      "__cuda_arch__ == 750": sm75
+      "__cuda_arch__ >= 750": sm75
+      "arch::sm75": sm75
+      "cutlass_arch_mma_sm75": sm75
+      "__cuda_arch__ == 860": sm86
+      "__cuda_arch__ >= 860": sm86
+      "arch::sm86": sm86
+      "cutlass_arch_mma_sm86": sm86
+      "__cuda_arch__ == 890": sm89
+      "__cuda_arch__ >= 890": sm89
+      "arch::sm89": sm89
+      "cutlass_arch_mma_sm89": sm89
+
+## ---------------------------------------------------------------------------
+## Skip taxonomy. Every skip-logged row (data/pr-page-skipped.yaml) and every
+## ledger `exclude` reason should map to one of these. The validator enforces
+## that any skip `reason` used is a key here (AC-1).
+## ---------------------------------------------------------------------------
+skip_reasons:
+  hopper-only: PR targets only Hopper (sm90/sm90a/H100); no in-scope pre-Hopper work.
+  blackwell-only: PR targets only Blackwell (sm100/sm120/B200) features (tcgen05/TMEM/CLC/NVFP4); out of scope.
+  sm80-only: PR targets only Ampere A100 (sm80); out of the {sm75,sm86,sm89} scope (see FUT-4). Not mapped to sm86.
+  no-prehopper-evidence: Kernel PR with no defensible in-scope architecture evidence (generic CUDA / architecture-agnostic).
+  non-kernel: PR does not touch GPU kernel / CUDA / PTX / device code.
+  framework-only: Host-side framework/serving/scheduling/model-API change with no kernel content.
+  docs-only: Documentation, changelog, or release-notes only.
+  cpu-only: CPU-path change only.
+  rocm-only: AMD/ROCm/HIP-only change; not an NVIDIA pre-Hopper kernel.
+  out-of-scope-repo: Candidate repo is not in the tracked repo set.
+  too-large: PR diff exceeds the bounded-fixture size budget for classification.
+  duplicate: PR already represented by an existing source-pr page or ledger row.
+  capability-guard-only: The only in-scope-arch mention is a capability guard / "not supported on <arch>" / fallback string, not an optimization target.
+
+## ---------------------------------------------------------------------------
+## Negative signals: substrings that, when they are the ONLY reason an in-scope
+## architecture token appears, force `capability-guard-only` (not `include`).
+## This is the empirically-observed vLLM false-positive pattern (e.g. "Turing
+## is not supported", "fall back on sm75"). The classifier checks these around
+## any architecture-token match before admitting evidence.
+## ---------------------------------------------------------------------------
+capability_guard_markers:
+  - "not supported"
+  - "unsupported"
+  - "no longer supported"
+  - "fall back"
+  - "fallback"
+  - "falls back"
+  - "requires sm"
+  - "minimum compute capability"
+  - "not available on"
+  - "disable"
+  - "skip on"
+
+## ---------------------------------------------------------------------------
+## Out-of-scope architecture tokens. Their presence alone never yields an
+## include; if a PR mentions ONLY these (no in-scope evidence tier matches),
+## the classifier picks the corresponding skip reason.
+## ---------------------------------------------------------------------------
+out_of_scope_arch_tokens:
+  sm90: hopper-only
+  sm90a: hopper-only
+  sm_90: hopper-only
+  H100: hopper-only
+  H200: hopper-only
+  Hopper: hopper-only
+  wgmma: hopper-only
+  sm100: blackwell-only
+  sm_100: blackwell-only
+  sm120: blackwell-only
+  sm_120: blackwell-only
+  B200: blackwell-only
+  Blackwell: blackwell-only
+  tcgen05: blackwell-only
+  umma: blackwell-only
+  tmem: blackwell-only
+  clc: blackwell-only
+  2sm-cooperative: blackwell-only
+  "2-sm cooperative": blackwell-only
+  nvfp4: blackwell-only
+  mxfp4: blackwell-only
+  sm80: sm80-only
+  sm_80: sm80-only
+  A100: sm80-only
+
+## ---------------------------------------------------------------------------
+## Non-kernel path globs: if a candidate's changed paths match ONLY these, the
+## classifier skips with `non-kernel` / `docs-only` / `framework-only`.
+## ---------------------------------------------------------------------------
+non_kernel_path_globs:
+  docs-only:
+    - "docs/**"
+    - "**/*.md"
+    - "**/CHANGELOG*"
+    - "**/release_notes*"
+  framework-only:
+    - "**/*.py"          # only when NO .cu/.cuh/.ptx kernel file is also touched
+  # Unambiguous device-code extensions: a changed path with one of these is
+  # strong kernel evidence on its own.
+  kernel_path_extensions:
+    - ".cu"
+    - ".cuh"
+    - ".cuh.inc"
+    - ".ptx"
+    - ".cuda"
+  # Ambiguous host/device C++ extensions: a path with one of these only counts
+  # as kernel evidence when the PR text also carries a kernel signal (so a
+  # host-only src/scheduler.cpp is not mistaken for kernel work).
+  ambiguous_path_extensions:
+    - ".cc"
+    - ".cpp"
+    - ".cxx"
+    - ".h"
+    - ".hpp"
+    - ".hxx"
+    - ".inl"

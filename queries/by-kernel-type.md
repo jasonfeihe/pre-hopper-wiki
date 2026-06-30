@@ -4,3 +4,9 @@
 
 | Kernel Type | Pages |
 |-------------|-------|
+| `attention` | [bugfix: Fix invalid kernel configuration for sm86](../sources/prs/flashinfer/PR-385.md) |
+| `decode` | [bugfix: Fix invalid kernel configuration for sm86](../sources/prs/flashinfer/PR-385.md) |
+| `flash-attention` | [bugfix: Fix invalid kernel configuration for sm86](../sources/prs/flashinfer/PR-385.md) |
+| `gemm` | [[Kernel][Quantization][MoE] add marlin kernel support for turing (sm75)](../sources/prs/vllm/PR-29901.md) |
+| `grouped-gemm` | [Feature: Add support for L40 FusedMoE in cutlass path](../sources/prs/flashinfer/PR-1973.md) |
+| `moe` | [Feature: Add support for L40 FusedMoE in cutlass path](../sources/prs/flashinfer/PR-1973.md), [[Kernel][Quantization][MoE] add marlin kernel support for turing (sm75)](../sources/prs/vllm/PR-29901.md) |

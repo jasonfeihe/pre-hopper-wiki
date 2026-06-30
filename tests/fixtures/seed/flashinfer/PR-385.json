@@ -1,0 +1,15 @@
+{
+  "number": 385,
+  "title": "bugfix: Fix invalid kernel configuration for sm86",
+  "author": "yzh119",
+  "date": "2024-07-20",
+  "url": "https://github.com/flashinfer-ai/flashinfer/pull/385",
+  "state": "merged",
+  "merge_sha": "cdac577011e8",
+  "changed_paths": [
+    "include/flashinfer/attention/decode.cuh",
+    "python/csrc/single_decode.cu"
+  ],
+  "body": "Fixes an invalid launch configuration on Ampere A10 (sm86): the decode attention kernel requested more shared memory than sm_86's 100 KB/SM opt-in limit, causing a launch failure. This guards the smem-size selection on __CUDA_ARCH__ == 860 and clamps the pipeline stages for sm86's smaller shared-memory budget (vs sm80's 164 KB).",
+  "diff": "+#if __CUDA_ARCH__ == 860\n+  // A10 / sm86 has a 100KB/SM shared-memory opt-in cap (< sm80's 164KB)\n+  constexpr size_t kMaxSmem = 99 * 1024;\n+#endif\n"
+}

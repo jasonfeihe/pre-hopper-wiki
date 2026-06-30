@@ -1,0 +1,3 @@
+## Skip audit emitted by scripts/generate-pr-pages.py. Every `reason`
+## must be a key in data/inclusion-policy.yaml::skip_reasons.
+rows: []

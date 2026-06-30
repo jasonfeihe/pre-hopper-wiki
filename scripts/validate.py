@@ -428,6 +428,232 @@ class Validator:
                 f"'{data['cutoff_date']}' is not an ISO date (YYYY-MM-DD)"
             )
 
+    # ---- ingestion: policy, ledgers, skip audit, refresh results -------
+
+    def _load_optional_yaml(self, rel: str):
+        """Load an optional data file. Returns (data, present). Reports a parse
+        error and returns (None, True) when the file exists but is unparseable."""
+        path = self.root / rel
+        if not path.is_file():
+            return None, False
+        try:
+            return load_yaml(path), True
+        except yaml.YAMLError as e:
+            self.err(f"{rel}: unparseable ({e})")
+            return None, True
+
+    def skip_reason_taxonomy(self) -> set:
+        """The closed set of allowed skip reasons, from inclusion-policy.yaml.
+        Empty set when the policy is absent (callers guard on that)."""
+        data, present = self._load_optional_yaml("data/inclusion-policy.yaml")
+        if not present or not isinstance(data, dict):
+            return set()
+        reasons = data.get("skip_reasons")
+        return set(reasons.keys()) if isinstance(reasons, dict) else set()
+
+    def validate_inclusion_policy(self):
+        data, present = self._load_optional_yaml("data/inclusion-policy.yaml")
+        if not present:
+            return  # optional file; absent is fine (the pipeline simply isn't seeded yet)
+        if not isinstance(data, dict):
+            self.err("data/inclusion-policy.yaml: top level must be a mapping")
+            return
+        schema = self.schemas.get("inclusion-policy", {})
+        for field in schema.get("required", []):
+            if field not in data or data[field] in (None, "", [], {}):
+                self.err(f"data/inclusion-policy.yaml: missing required key '{field}'")
+
+        tiers = data.get("evidence_tiers")
+        if not isinstance(tiers, list) or not tiers:
+            self.err("data/inclusion-policy.yaml: 'evidence_tiers' must be a non-empty list")
+            tiers = []
+        tier_schema = schema.get("evidence_tier_schema", {})
+        tier_req = tier_schema.get("required", [])
+        allowed_strength = (tier_schema.get("constraints", {}) or {}).get("strength")
+        arch_vocab = self.vocab("architectures")
+        for i, tier in enumerate(tiers):
+            if not isinstance(tier, dict):
+                self.err(f"data/inclusion-policy.yaml: evidence_tier #{i} is not a mapping")
+                continue
+            label = tier.get("id", i)
+            for field in tier_req:
+                if field not in tier:
+                    self.err(f"data/inclusion-policy.yaml: tier '{label}' missing '{field}'")
+            if allowed_strength and tier.get("strength") not in allowed_strength:
+                self.err(
+                    f"data/inclusion-policy.yaml: tier '{label}' strength "
+                    f"'{tier.get('strength')}' not in {allowed_strength}"
+                )
+            # Every architecture a tier maps to must be in scope.
+            maps_to = tier.get("maps_to", {})
+            if isinstance(maps_to, dict):
+                for token, arch in maps_to.items():
+                    if arch not in arch_vocab:
+                        self.err(
+                            f"data/inclusion-policy.yaml: tier '{label}' maps "
+                            f"'{token}' to out-of-scope architecture '{arch}'"
+                        )
+
+        reasons = data.get("skip_reasons")
+        if not isinstance(reasons, dict) or not reasons:
+            self.err("data/inclusion-policy.yaml: 'skip_reasons' must be a non-empty mapping")
+
+    def validate_candidate_ledgers(self):
+        base = self.root / "candidates"
+        if not base.is_dir():
+            return
+        schema = self.schemas.get("candidate-ledger", {})
+        required = schema.get("required", [])
+        row_schema = schema.get("row_schema", {})
+        row_req = row_schema.get("required", [])
+        row_cc = row_schema.get("constraints", {}) or {}
+        decision_enum = row_cc.get("decision")
+        repo_vocab = self._tracked_repo_set()
+        for ledger in sorted(base.glob("*.yaml")):
+            rel = ledger.relative_to(self.root).as_posix()
+            try:
+                data = load_yaml(ledger)
+            except yaml.YAMLError as e:
+                self.err(f"{rel}: unparseable ({e})")
+                continue
+            if not isinstance(data, dict):
+                self.err(f"{rel}: top level must be a mapping")
+                continue
+            for field in required:
+                if field not in data:
+                    self.err(f"{rel}: missing required key '{field}'")
+            if repo_vocab and data.get("repo") and data["repo"] not in repo_vocab:
+                self.err(f"{rel}: repo '{data['repo']}' is not in the tracked repo set")
+            rows = data.get("prs", [])
+            if not isinstance(rows, list):
+                self.err(f"{rel}: 'prs' must be a list")
+                rows = []
+            tally = {"include": 0, "exclude": 0, "defer": 0, "needs-review": 0}
+            for row in rows:
+                if not isinstance(row, dict):
+                    self.err(f"{rel}: a prs row is not a mapping")
+                    continue
+                num = row.get("number", "?")
+                for field in row_req:
+                    if field not in row or row[field] in (None, ""):
+                        self.err(f"{rel}: PR {num} missing required field '{field}'")
+                dec = row.get("decision")
+                if decision_enum and dec not in decision_enum:
+                    self.err(f"{rel}: PR {num} decision '{dec}' not in {decision_enum}")
+                elif dec in tally:
+                    tally[dec] += 1
+                if dec == "include" and not row.get("architecture_evidence"):
+                    self.err(f"{rel}: PR {num} is 'include' but has no architecture_evidence")
+            # Summary counts, when present, must match the real tallies.
+            for key, count_field in (("include", "included"), ("exclude", "excluded"),
+                                     ("defer", "deferred"), ("needs-review", "needs_review")):
+                if count_field in data and data[count_field] != tally[key]:
+                    self.err(
+                        f"{rel}: {count_field}={data[count_field]} disagrees with "
+                        f"actual {key} count {tally[key]}"
+                    )
+            if "total_candidates" in data and data["total_candidates"] != len(rows):
+                self.err(
+                    f"{rel}: total_candidates={data['total_candidates']} disagrees "
+                    f"with actual row count {len(rows)}"
+                )
+
+    def _tracked_repo_set(self) -> set:
+        """Repos the loop tracks, read from candidates/*.yaml repo fields plus
+        refresh-search-results. Used to flag out-of-scope-repo ledgers. Returns
+        the union of declared repos so a new ledger that declares its own repo
+        is accepted, while a ledger pointing at an unrelated repo is flagged
+        only when an explicit allowlist file is present."""
+        allow = self.root / "candidates" / "tracked-repos.txt"
+        if allow.is_file():
+            return {ln.strip() for ln in allow.read_text(encoding="utf-8").splitlines()
+                    if ln.strip() and not ln.startswith("#")}
+        return set()  # no allowlist -> do not constrain repo names
+
+    def validate_skipped_audit(self):
+        data, present = self._load_optional_yaml("data/pr-page-skipped.yaml")
+        if not present:
+            return
+        if not isinstance(data, dict) or "rows" not in data:
+            self.err("data/pr-page-skipped.yaml: missing required key 'rows'")
+            return
+        rows = data.get("rows") or []
+        if not isinstance(rows, list):
+            self.err("data/pr-page-skipped.yaml: 'rows' must be a list")
+            return
+        schema = self.schemas.get("pr-page-skipped-audit", {})
+        row_schema = schema.get("row_schema", {})
+        row_req = row_schema.get("required", [])
+        stage_enum = (row_schema.get("constraints", {}) or {}).get("stage")
+        taxonomy = self.skip_reason_taxonomy()
+        for row in rows:
+            if not isinstance(row, dict):
+                self.err("data/pr-page-skipped.yaml: a row is not a mapping")
+                continue
+            label = row.get("pr_id", row.get("pr_number", "?"))
+            for field in row_req:
+                if field not in row or row[field] in (None, ""):
+                    self.err(f"data/pr-page-skipped.yaml: row '{label}' missing '{field}'")
+            if stage_enum and row.get("stage") not in stage_enum:
+                self.err(
+                    f"data/pr-page-skipped.yaml: row '{label}' stage "
+                    f"'{row.get('stage')}' not in {stage_enum}"
+                )
+            reason = row.get("reason")
+            if taxonomy and reason is not None and reason not in taxonomy:
+                self.err(
+                    f"data/pr-page-skipped.yaml: row '{label}' reason '{reason}' "
+                    f"is not a key in data/inclusion-policy.yaml::skip_reasons"
+                )
+
+    def validate_refresh_subset(self):
+        """Every PR number seen in a refresh (refresh-search-results.yaml) must
+        appear as a row in the matching candidates/<repo_slug>.yaml ledger."""
+        data, present = self._load_optional_yaml("data/refresh-search-results.yaml")
+        if not present:
+            return
+        if not isinstance(data, dict):
+            self.err("data/refresh-search-results.yaml: top level must be a mapping")
+            return
+        for field in self.schemas.get("refresh-search-results", {}).get("required", []):
+            if field not in data:
+                self.err(f"data/refresh-search-results.yaml: missing required key '{field}'")
+        repos = data.get("repos") or []
+        if not isinstance(repos, list):
+            self.err("data/refresh-search-results.yaml: 'repos' must be a list")
+            return
+        for entry in repos:
+            if not isinstance(entry, dict):
+                self.err("data/refresh-search-results.yaml: a repos entry is not a mapping")
+                continue
+            slug = entry.get("repo_slug", "?")
+            seen = entry.get("pr_numbers_seen") or []
+            if seen != sorted(seen):
+                self.err(
+                    f"data/refresh-search-results.yaml: repo '{slug}' "
+                    f"pr_numbers_seen is not sorted ascending"
+                )
+            ledger_path = self.root / "candidates" / f"{slug}.yaml"
+            if not ledger_path.is_file():
+                if seen:
+                    self.err(
+                        f"data/refresh-search-results.yaml: repo '{slug}' has seen "
+                        f"PRs but candidates/{slug}.yaml does not exist"
+                    )
+                continue
+            try:
+                ledger = load_yaml(ledger_path) or {}
+            except yaml.YAMLError:
+                continue  # ledger parse error already reported by validate_candidate_ledgers
+            ledger_numbers = {r.get("number") for r in (ledger.get("prs") or [])
+                              if isinstance(r, dict)}
+            for n in seen:
+                if n not in ledger_numbers:
+                    self.err(
+                        f"data/refresh-search-results.yaml: repo '{slug}' saw PR "
+                        f"#{n} but it is not a row in candidates/{slug}.yaml"
+                    )
+
     # ---- driver --------------------------------------------------------
 
     def collect_errors(self) -> list[str]:
@@ -442,6 +668,10 @@ class Validator:
         self.validate_links()
         self.validate_version_claims()
         self.validate_refresh_cutoff()
+        self.validate_inclusion_policy()
+        self.validate_candidate_ledgers()
+        self.validate_skipped_audit()
+        self.validate_refresh_subset()
         return self.errors
 
     def run(self) -> int:

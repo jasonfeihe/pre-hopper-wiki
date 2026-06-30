@@ -1,0 +1,15 @@
+{
+  "number": 29901,
+  "title": "[Kernel][Quantization][MoE] add marlin kernel support for turing (sm75)",
+  "author": "jinzhen-lin",
+  "date": "2025-12-02",
+  "url": "https://github.com/vllm-project/vllm/pull/29901",
+  "state": "merged",
+  "merge_sha": "ce96857fdd2b",
+  "changed_paths": [
+    "csrc/quantization/marlin/sparse/marlin_kernel.cu",
+    "csrc/moe/marlin_moe_ops.cu"
+  ],
+  "body": "This PR adds Marlin INT4 weight-only quantized kernel support for Turing (sm75) GPUs such as the T4. Previously the Marlin MoE path required sm80+; here we add the sm_75 sub-byte mma.sync INT4 path and guard it with __CUDA_ARCH__ == 750 so the ldmatrix + MMA instruction selection matches Turing's second-generation Tensor Cores. Tested on T4.",
+  "diff": "+#if __CUDA_ARCH__ == 750\n+  // Turing (sm75) path: sub-byte INT4 mma.sync with ldmatrix operand load\n+  // (Turing INT4 MMA uses the sub-byte m8n8k32-class shape)\n+#endif\n"
+}

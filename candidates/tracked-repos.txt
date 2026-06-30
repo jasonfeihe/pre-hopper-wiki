@@ -1,0 +1,10 @@
+# Tracked repositories for pre-Hopper candidate ledgers (DEC-2).
+# A candidates/<slug>.yaml whose `repo` field is not listed here is flagged
+# out-of-scope-repo by scripts/validate.py.
+NVIDIA/cutlass
+sgl-project/sglang
+vllm-project/vllm
+flashinfer-ai/flashinfer
+pytorch/pytorch
+NVIDIA/TensorRT-LLM
+NVIDIA/cuVS

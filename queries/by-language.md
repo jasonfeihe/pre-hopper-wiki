@@ -4,3 +4,6 @@
 
 | Language | Guide | Related Pages |
 |----------|-------|---------------|
+| `cuda-cpp` |  | [Feature: Add support for L40 FusedMoE in cutlass path](../sources/prs/flashinfer/PR-1973.md), [bugfix: Fix invalid kernel configuration for sm86](../sources/prs/flashinfer/PR-385.md), [[Kernel][Quantization][MoE] add marlin kernel support for turing (sm75)](../sources/prs/vllm/PR-29901.md) |
+| `cutlass` |  | [Feature: Add support for L40 FusedMoE in cutlass path](../sources/prs/flashinfer/PR-1973.md) |
+| `ptx` |  | [[Kernel][Quantization][MoE] add marlin kernel support for turing (sm75)](../sources/prs/vllm/PR-29901.md) |

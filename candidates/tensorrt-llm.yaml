@@ -1,0 +1,18 @@
+repo: NVIDIA/TensorRT-LLM
+searched_at: '2026-06-30'
+window_start: '2020-01-01'
+keywords_used:
+- sm75
+- sm86
+- sm89
+- T4
+- A10
+- L40
+- mma.sync
+- cp.async
+total_candidates: 0
+included: 0
+excluded: 0
+deferred: 0
+needs_review: 0
+prs: []

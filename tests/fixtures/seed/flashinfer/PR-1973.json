@@ -1,0 +1,15 @@
+{
+  "number": 1973,
+  "title": "Feature: Add support for L40 FusedMoE in cutlass path",
+  "author": "amirkl94",
+  "date": "2025-10-23",
+  "url": "https://github.com/flashinfer-ai/flashinfer/pull/1973",
+  "state": "merged",
+  "merge_sha": "159d0a057ab3",
+  "changed_paths": [
+    "csrc/fused_moe/cutlass_backend/cutlass_fused_moe_sm89.cu",
+    "flashinfer/fused_moe/__init__.py"
+  ],
+  "body": "Adds an Ada Lovelace L40 (sm89) FusedMoE path in the CUTLASS backend. The L40 lacks the Hopper TMA/wgmma path, so this dispatches to an sm_89 CUTLASS GEMM configuration with FP8 (E4M3) tensor-core MMA tuned for Ada's 4th-gen Tensor Cores. Adds a compute-capability 8.9 dispatch branch.",
+  "diff": "+// L40 / sm89 FusedMoE: Ada FP8 tensor-core path\n+#if defined(CUTLASS_ARCH_MMA_SM89_SUPPORTED)\n+  using ArchTag = cutlass::arch::Sm89;\n+  // FP8 E4M3 MMA for Ada Lovelace\n+#endif\n"
+}

@@ -61,6 +61,14 @@ techniques:
   - data-reuse
   - quantization
   - fine-grained-quantization
+  # General-GPU / memory-system techniques (all-GPU-kernel scope, DEC-4).
+  - memory-bandwidth-bound
+  - radix-select
+  - warp-aggregation
+  - atomics-reduction
+  - coalesced-access
+  - texture-memory
+  - cub-primitives
 
 kernel_types:
   - gemm
@@ -77,6 +85,25 @@ kernel_types:
   - normalization
   - quantization
   - fused-kernel
+  - moe
+  - decode
+  - prefill
+  # Vector-search / general-GPU kernel types (all-GPU-kernel scope, DEC-4;
+  # covers cuVS and similar libraries).
+  - knn
+  - vector-search
+  - clustering
+  - top-k
+  - select
+  - ivf
+  - pq
+  - graph-search
+  - distance
+  - spmm
+  - spgemm
+  - radix-sort
+  - prefix-sum
+  - histogram
 
 languages:
   - cuda-cpp

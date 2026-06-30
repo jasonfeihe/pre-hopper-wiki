@@ -246,3 +246,97 @@ refresh-cutoff:
     - cutoff_date
   optional:
     - notes
+
+## data/inclusion-policy.yaml. Declarative pre-Hopper relevance policy consumed
+## by scripts/classify_candidate.py and shape-validated by scripts/validate.py.
+## `evidence_tiers` drive include verdicts; `skip_reasons` is the closed
+## taxonomy every skip/exclude reason must come from.
+inclusion-policy:
+  required:
+    - schema_version
+    - evidence_tiers
+    - skip_reasons
+  optional:
+    - capability_guard_markers
+    - out_of_scope_arch_tokens
+    - non_kernel_path_globs
+  evidence_tier_schema:
+    required:
+      - id
+      - description
+      - strength
+      - maps_to
+    constraints:
+      strength: [strong, moderate, weak]
+  constraints:
+    evidence_tiers_required_min: 1
+    skip_reasons_required_min: 1
+    # The validator additionally cross-checks that every architecture a tier
+    # maps_to is in data/tags.yaml architectures {sm75, sm86, sm89}.
+
+## data/candidates/<repo>.yaml ledgers (one per tracked repo). Decision-audit
+## records of include/exclude/defer/needs-review for surfaced PR candidates.
+candidate-ledger:
+  required:
+    - repo
+    - searched_at
+    - window_start
+    - keywords_used
+    - prs
+  optional:
+    - total_candidates
+    - included
+    - excluded
+    - deferred
+    - needs_review
+    - notes
+  row_schema:
+    required:
+      - number
+      - title
+      - date
+      - decision
+      - reason
+    optional:
+      - architecture_evidence
+      - files_changed
+    constraints:
+      decision: [include, exclude, defer, needs-review]
+      architecture_evidence_required_when: "decision == include"
+  constraints:
+    # Summary counts (when present) must equal the actual per-decision tallies;
+    # enforced by scripts/validate.py validate_candidate_ledgers().
+    summary_counts_must_match: true
+
+## data/refresh-search-results.yaml (AC-8). Per-repo record of what a discovery
+## refresh saw. Byte-stable; pr_numbers_seen sorted ascending. The refresh-subset
+## validator confirms every seen PR is represented in the matching ledger.
+refresh-search-results:
+  required:
+    - cutoff_date
+    - repos
+  repo_schema:
+    required:
+      - repo_slug
+      - searched_at
+      - window_start
+      - pr_numbers_seen
+      - last_pr_date_seen
+
+## data/pr-page-skipped.yaml (AC-1/AC-5). Skip audit emitted by
+## scripts/generate-pr-pages.py. Every row's `reason` must be a key in
+## data/inclusion-policy.yaml::skip_reasons (enforced by the validator).
+pr-page-skipped-audit:
+  required:
+    - rows
+  row_schema:
+    required:
+      - repo
+      - pr_number
+      - stage
+      - reason
+      - recorded_at
+    optional:
+      - pr_id
+    constraints:
+      stage: [discover, classify, generate]

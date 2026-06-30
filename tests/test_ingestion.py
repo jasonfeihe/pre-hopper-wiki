@@ -144,6 +144,23 @@ class ClassifierTests(unittest.TestCase):
         self.assertEqual(v["decision"], "include")
         self.assertEqual(v["architectures"], ["sm86"])
 
+    def test_trailing_guard_about_other_arch_does_not_taint(self):
+        # Clean sm89 target; the trailing-sentence guard is about a DIFFERENT
+        # arch (sm75), so it must not mark the sm89 mention as guarded.
+        v = self._verdict({"title": "Adds optimized sm89 kernel. Not supported on sm75.",
+                           "changed_paths": ["x.cu"]})
+        self.assertEqual(v["decision"], "include")
+        self.assertEqual(v["architectures"], ["sm89"])
+
+    def test_trailing_guard_about_same_arch_still_guards(self):
+        # The only mention is sm75 and the trailing guard names no other arch,
+        # so it genuinely refers back to sm75 -> capability-guard-only.
+        v = self._verdict({"title": "MoE kernel",
+                           "body": "Turing (sm75). Not supported; fall back to cuda core.",
+                           "changed_paths": ["x.cu"]})
+        self.assertEqual(v["decision"], "skip")
+        self.assertEqual(v["reason"], "capability-guard-only")
+
 
 class GeneratorTests(unittest.TestCase):
     """generation from the committed seed manifest, offline."""
@@ -275,6 +292,18 @@ class RefreshTests(unittest.TestCase):
             run_script("refresh_candidate_ledger.py", "--root", str(kb),
                        "--repos", "cutlass,flashinfer", "--searched-at", "2026-06-30")
             self.assertEqual(run_script("validate.py", "--root", str(kb)).returncode, 0)
+
+    def test_refresh_result_repo_schema_enforced(self):
+        # A repo entry missing schema-required fields (searched_at/window_start/
+        # last_pr_date_seen) must be rejected, not silently OK.
+        with tempfile.TemporaryDirectory() as d:
+            kb = _clone_kb(Path(d))
+            (kb / "data" / "refresh-search-results.yaml").write_text(
+                "cutoff_date: '2026-06-30'\nrepos:\n- repo_slug: cutlass\n  pr_numbers_seen: []\n",
+                encoding="utf-8")
+            r = run_script("validate.py", "--root", str(kb))
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("missing required field 'searched_at'", r.stdout)
 
     def test_refresh_honors_discovery_window(self):
         # Out-of-window PRs (before --since or after --until) must be dropped in

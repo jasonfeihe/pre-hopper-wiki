@@ -622,11 +622,21 @@ class Validator:
         if not isinstance(repos, list):
             self.err("data/refresh-search-results.yaml: 'repos' must be a list")
             return
+        repo_required = (self.schemas.get("refresh-search-results", {})
+                         .get("repo_schema", {}).get("required", []))
         for entry in repos:
             if not isinstance(entry, dict):
                 self.err("data/refresh-search-results.yaml: a repos entry is not a mapping")
                 continue
             slug = entry.get("repo_slug", "?")
+            # Enforce the per-repo schema's required fields (searched_at,
+            # window_start, pr_numbers_seen, last_pr_date_seen, repo_slug).
+            for field in repo_required:
+                if field not in entry:
+                    self.err(
+                        f"data/refresh-search-results.yaml: repo '{slug}' "
+                        f"missing required field '{field}'"
+                    )
             seen = entry.get("pr_numbers_seen") or []
             if seen != sorted(seen):
                 self.err(

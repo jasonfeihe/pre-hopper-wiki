@@ -182,12 +182,14 @@ def main():
     args = parser.parse_args()
 
     root = Path(args.root).expanduser().resolve() if args.root else _DEFAULT_ROOT
-    manifest_path = Path(args.manifest) if args.manifest else root / DEFAULT_MANIFEST
-    # A custom --manifest is a PARTIAL run: it is authoritative only for the ids it
-    # declares, so reconciliation must not delete pages/skip-rows outside it (Codex
-    # R11). The default committed manifest is a FULL rebuild of the whole
-    # generator-owned corpus (keeps the R8 deleted-entry cleanup).
-    partial = bool(args.manifest)
+    default_manifest = (root / DEFAULT_MANIFEST).resolve()
+    manifest_path = Path(args.manifest).resolve() if args.manifest else default_manifest
+    # Full-vs-partial is decided by the RESOLVED manifest path, not by whether
+    # --manifest was passed: invoking with the default seed manifest explicitly
+    # must behave exactly like the default run (a FULL rebuild that cleans up
+    # stale pages/skip-rows for deleted entries, Codex R12). Only a genuinely
+    # DIFFERENT manifest is a partial run authoritative for just its ids (R11).
+    partial = manifest_path != default_manifest
     if not manifest_path.is_file():
         print(f"ERROR: manifest not found: {manifest_path}", file=sys.stderr)
         sys.exit(2)

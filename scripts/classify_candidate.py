@@ -289,11 +289,14 @@ def classify(candidate: dict, policy: dict, in_scope_archs: set[str] | None = No
     # the text must then carry a device signal (closes the empty-paths bypass).
     # The list is device-SPECIFIC: neither the generic word "kernel" nor the
     # library name "cutlass" is a signal, because host-side dispatch/plumbing code
-    # routinely names CUTLASS without adding any device code (Codex R7). Only
-    # device files (.cu/.cuh/.ptx) and device constructs qualify a .cpp/.h path.
+    # routinely names CUTLASS without adding any device code (Codex R7). It is also
+    # restricted to device CONSTRUCTS, not file EXTENSIONS: ".cu"/".cuh"/".ptx" are
+    # matched against actual changed_paths via has_device_path below, so leaving
+    # them here would let a host-only .cpp that merely NAMES a device file in prose
+    # (e.g. "see foo.cu") falsely pass (Codex R12).
     kernel_text_signals = ("__cuda_arch__", "mma.sync", "ldmatrix", "cp.async",
-                           "wmma", ".cu", ".cuh", ".ptx", "__global__",
-                           "__device__", "tensor core", "tensor-core", "warp-level")
+                           "wmma", "__global__", "__device__",
+                           "tensor core", "tensor-core", "warp-level")
     has_kernel_text = any(s in haystack for s in kernel_text_signals)
     has_device_path = bool(kernel_exts) and any(p.endswith(kernel_exts) for p in paths)
     has_ambiguous_path = bool(ambiguous_exts) and any(p.endswith(ambiguous_exts) for p in paths)

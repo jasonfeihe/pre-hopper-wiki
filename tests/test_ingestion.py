@@ -164,6 +164,17 @@ class ClassifierTests(unittest.TestCase):
         self.assertEqual(v["decision"], "include")
         self.assertEqual(v["architectures"], ["sm89"])
 
+    def test_cu_filename_in_prose_does_not_rescue_host_cpp(self):
+        # R12 regression: a device file EXTENSION mentioned in prose (e.g. "see
+        # foo.cu") is NOT device evidence — only a real .cu/.cuh/.ptx changed path
+        # or a device construct is. A host-only .cpp referencing a .cu filename +
+        # an in-scope arch must still skip as non-kernel.
+        v = self._verdict({"title": "sm89 dispatch refactor",
+                           "body": "Host-side plumbing; see kernels in foo.cu / bar.cuh for context.",
+                           "changed_paths": ["src/dispatch.cpp"]})
+        self.assertEqual(v["decision"], "skip")
+        self.assertEqual(v["reason"], "non-kernel")
+
     def test_empty_paths_no_kernel_text_is_not_kernel(self):
         v = self._verdict({"title": "optimize for sm89"})
         self.assertEqual(v["decision"], "skip")
@@ -521,6 +532,25 @@ class GeneratorTests(unittest.TestCase):
             # An unrelated page still survives.
             self.assertTrue((kb / "sources" / "prs" / "vllm" / "PR-29901.md").exists())
             self.assertEqual(run_script("validate.py", "--root", str(kb)).returncode, 0)
+
+    def test_explicit_default_manifest_path_is_full_rebuild(self):
+        # R12 regression: passing the DEFAULT seed manifest path explicitly must
+        # behave exactly like the default invocation — a full rebuild that removes
+        # stale pages for entries deleted from that manifest (not a partial run).
+        with tempfile.TemporaryDirectory() as d:
+            kb = _clone_kb(Path(d))
+            manifest = kb / "tests" / "fixtures" / "seed" / "seed-manifest.yaml"
+            data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+            data["entries"] = [e for e in data["entries"]
+                               if not (e["repo_slug"] == "flashinfer" and e["pr"] == 385)]
+            manifest.write_text(yaml.safe_dump(data), encoding="utf-8")
+            r = run_script("generate-pr-pages.py", "--root", str(kb), "--manifest", str(manifest))
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertFalse((kb / "sources" / "prs" / "flashinfer" / "PR-385.md").exists(),
+                             "explicit default-path run must still clean up a deleted entry's page")
+            self.assertTrue((kb / "sources" / "prs" / "flashinfer" / "PR-1973.md").exists())
+            self.assertEqual(run_script("validate.py", "--root", str(kb)).returncode, 0)
+
 
 
     """fixture-mode discovery, no network, idempotent, atomic."""

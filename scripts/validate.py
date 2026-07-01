@@ -509,6 +509,10 @@ class Validator:
         row_cc = row_schema.get("constraints", {}) or {}
         decision_enum = row_cc.get("decision")
         repo_vocab = self._tracked_repo_set()
+        # Closed skip/exclude taxonomy: an `exclude` verdict in a ledger must cite
+        # a reason from data/inclusion-policy.yaml::skip_reasons, same as the skip
+        # audit (Codex R6). Empty taxonomy (policy absent) disables the check.
+        taxonomy = self.skip_reason_taxonomy()
         for ledger in sorted(base.glob("*.yaml")):
             rel = ledger.relative_to(self.root).as_posix()
             try:
@@ -544,6 +548,13 @@ class Validator:
                     tally[dec] += 1
                 if dec == "include" and not row.get("architecture_evidence"):
                     self.err(f"{rel}: PR {num} is 'include' but has no architecture_evidence")
+                if dec == "exclude" and taxonomy:
+                    reason = row.get("reason")
+                    if reason not in taxonomy:
+                        self.err(
+                            f"{rel}: PR {num} exclude reason '{reason}' is not a key "
+                            f"in data/inclusion-policy.yaml::skip_reasons"
+                        )
             # Summary counts, when present, must match the real tallies.
             for key, count_field in (("include", "included"), ("exclude", "excluded"),
                                      ("defer", "deferred"), ("needs-review", "needs_review")):

@@ -33,7 +33,8 @@ prs:
   title: fix xqa mha_sm90.cu
   date: '2025-12-02'
   decision: exclude
-  reason: Hopper-only (sm90) xQA MHA fix; no pre-Hopper relevance.
+  reason: hopper-only
+  reason_detail: Hopper-only (sm90) xQA MHA fix; no pre-Hopper relevance.
 - number: 1973
   title: 'Feature: Add support for L40 FusedMoE in cutlass path'
   date: '2025-10-23'

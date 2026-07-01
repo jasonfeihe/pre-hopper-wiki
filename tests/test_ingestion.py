@@ -127,6 +127,25 @@ class ClassifierTests(unittest.TestCase):
         self.assertEqual(v["decision"], "skip")
         self.assertEqual(v["reason"], "non-kernel")
 
+    def test_bare_kernel_word_does_not_rescue_host_cpp(self):
+        # R6 regression: the generic word "kernel" (as in "kernel scheduler") is
+        # NOT device evidence, so a host-only .cpp that merely says "kernel" +
+        # names an in-scope arch must still skip as non-kernel.
+        v = self._verdict({"title": "Host-only A10 kernel scheduler change",
+                           "body": "Refactor the kernel launcher scheduling on the host.",
+                           "changed_paths": ["src/scheduler.cpp"]})
+        self.assertEqual(v["decision"], "skip")
+        self.assertEqual(v["reason"], "non-kernel")
+
+    def test_device_construct_in_cpp_still_counts(self):
+        # A device construct (__global__/mma.sync) in an ambiguous .cpp IS
+        # evidence -> a clean in-scope arch still includes.
+        v = self._verdict({"title": "A10 attention",
+                           "body": "add __global__ mma.sync path for sm86",
+                           "changed_paths": ["src/attn.cpp"]})
+        self.assertEqual(v["decision"], "include")
+        self.assertEqual(v["architectures"], ["sm86"])
+
     def test_empty_paths_no_kernel_text_is_not_kernel(self):
         v = self._verdict({"title": "optimize for sm89"})
         self.assertEqual(v["decision"], "skip")
@@ -383,6 +402,21 @@ class GeneratorTests(unittest.TestCase):
             second = (kb / "candidates" / "cutlass.yaml").read_text(encoding="utf-8")
             self.assertEqual(first, second)
 
+    def test_subset_refresh_preserves_untouched_repos(self):
+        # R6 regression: a targeted `--repos flashinfer` refresh must NOT erase the
+        # other tracked repos from data/refresh-search-results.yaml.
+        with tempfile.TemporaryDirectory() as d:
+            kb = _clone_kb(Path(d))
+            rsr = kb / "data" / "refresh-search-results.yaml"
+            before = {e["repo_slug"] for e in yaml.safe_load(rsr.read_text(encoding="utf-8"))["repos"]}
+            self.assertEqual(len(before), 7, "fixture should start with all 7 tracked repos")
+            r = run_script("refresh_candidate_ledger.py", "--root", str(kb),
+                           "--repos", "flashinfer", "--searched-at", "2026-06-30")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            after = {e["repo_slug"] for e in yaml.safe_load(rsr.read_text(encoding="utf-8"))["repos"]}
+            self.assertEqual(after, before, "subset refresh must preserve untouched repos")
+            self.assertEqual(run_script("validate.py", "--root", str(kb)).returncode, 0)
+
     def test_refresh_default_mode_uses_no_network(self):
         with tempfile.TemporaryDirectory() as d:
             kb = _clone_kb(Path(d))
@@ -480,6 +514,34 @@ class CommittedArtifactTests(unittest.TestCase):
         page = (REPO / "sources" / "prs" / "vllm" / "PR-29901.md").read_text(encoding="utf-8")
         self.assertNotIn("m16n8k8", manifest)
         self.assertNotIn("m16n8k8", page)
+
+    def test_committed_ledger_exclude_reasons_are_taxonomy_keys(self):
+        # R6: every `exclude` row in a committed ledger must cite a skip-taxonomy
+        # key, not free-form prose (prose belongs in reason_detail).
+        policy = yaml.safe_load((REPO / "data" / "inclusion-policy.yaml").read_text(encoding="utf-8"))
+        taxonomy = set(policy["skip_reasons"].keys())
+        for ledger in (REPO / "candidates").glob("*.yaml"):
+            data = yaml.safe_load(ledger.read_text(encoding="utf-8")) or {}
+            for row in data.get("prs", []):
+                if row.get("decision") == "exclude":
+                    self.assertIn(row.get("reason"), taxonomy,
+                                  f"{ledger.name} PR {row.get('number')} exclude reason not in taxonomy")
+
+    def test_ledger_exclude_reason_off_taxonomy_is_rejected(self):
+        # R6 regression: the validator must reject an exclude row whose reason is
+        # not a skip-taxonomy key.
+        with tempfile.TemporaryDirectory() as d:
+            kb = _clone_kb(Path(d))
+            led = kb / "candidates" / "flashinfer.yaml"
+            data = yaml.safe_load(led.read_text(encoding="utf-8"))
+            for row in data["prs"]:
+                if row["decision"] == "exclude":
+                    row["reason"] = "totally-made-up-reason"
+                    break
+            led.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+            r = run_script("validate.py", "--root", str(kb))
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertIn("exclude reason", r.stdout + r.stderr)
 
 
 class ScaleTests(unittest.TestCase):

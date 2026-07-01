@@ -298,11 +298,15 @@ candidate-ledger:
       - decision
       - reason
     optional:
+      - reason_detail
       - architecture_evidence
       - files_changed
     constraints:
       decision: [include, exclude, defer, needs-review]
       architecture_evidence_required_when: "decision == include"
+      # An `exclude` row's `reason` must be a data/inclusion-policy.yaml::skip_reasons
+      # key (closed taxonomy); free-text rationale goes in `reason_detail`.
+      exclude_reason_in_skip_taxonomy: true
   constraints:
     # Summary counts (when present) must equal the actual per-decision tallies;
     # enforced by scripts/validate.py validate_candidate_ledgers().

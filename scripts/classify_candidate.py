@@ -281,13 +281,15 @@ def classify(candidate: dict, policy: dict, in_scope_archs: set[str] | None = No
     # A source-pr page is a KERNEL page. Require positive evidence that the PR
     # touches device/kernel code. A path with an UNAMBIGUOUS device extension
     # (.cu/.cuh/.ptx) is sufficient. An AMBIGUOUS C++ path (.cpp/.h/...) counts
-    # only when the text also carries a kernel signal, so a host-only
-    # src/scheduler.cpp is not mistaken for kernel work. Absence of paths is not
-    # a pass — the text must then carry a kernel signal (closes the empty-paths
-    # bypass, Codex).
+    # only when the text also carries a DEVICE-SPECIFIC signal, so a host-only
+    # src/scheduler.cpp is not mistaken for kernel work. The signal list is
+    # deliberately device-specific: the bare word "kernel" is NOT a signal,
+    # because host-side PRs routinely say "kernel scheduler"/"kernel launcher"
+    # without touching device code (Codex R6). Absence of paths is not a pass —
+    # the text must then carry a device signal (closes the empty-paths bypass).
     kernel_text_signals = ("__cuda_arch__", "mma.sync", "ldmatrix", "cp.async",
                            "wmma", ".cu", ".cuh", ".ptx", "cutlass", "__global__",
-                           "tensor core", "tensor-core", "warp-level", "kernel")
+                           "__device__", "tensor core", "tensor-core", "warp-level")
     has_kernel_text = any(s in haystack for s in kernel_text_signals)
     has_device_path = bool(kernel_exts) and any(p.endswith(kernel_exts) for p in paths)
     has_ambiguous_path = bool(ambiguous_exts) and any(p.endswith(ambiguous_exts) for p in paths)

@@ -57,6 +57,20 @@ def _allowed_statuses(root: Path) -> list[str]:
         return fallback
 
 
+def _page_id(root: Path, page: Path) -> str:
+    """The collision-safe page id for a generated PR page path:
+    sources/prs/<slug>/PR-<N>.md -> pr-<slug>-<N>."""
+    slug, fname = page.relative_to(root).parts[-2:]
+    return f"pr-{slug}-{fname[len('PR-'):-len('.md')]}"
+
+
+def _existing_pr_pages(root: Path) -> list[Path]:
+    """Every generated PR page currently on disk. The generator OWNS this tree,
+    so any page whose id is not produced by the current manifest is stale."""
+    base = root / "sources" / "prs"
+    return sorted(base.rglob("PR-*.md")) if base.is_dir() else []
+
+
 def _evidence_sentence(evidence: list[dict]) -> str:
     bits = [f"{e['architecture']} via {e['evidence_type']} ('{e['token']}')" for e in evidence]
     return "Pre-Hopper relevance: " + "; ".join(bits) + "."
@@ -173,9 +187,6 @@ def main():
                 "stage": "classify",
                 "reason": verdict["reason"],
                 "recorded_at": captured_at,
-                # The page this entry would occupy — removed below if it exists,
-                # so a verdict that flips include->skip never leaves a stale page.
-                "_page_path": root / "sources" / "prs" / entry["repo_slug"] / f"PR-{entry['pr']}.md",
             })
             continue
         errs = validate_page_fields(entry, verdict, vocabs, arch_vocab, allowed_statuses)
@@ -192,15 +203,25 @@ def main():
             print(f"  - {e}", file=sys.stderr)
         sys.exit(1)
 
+    # Reconcile the generator-owned artifacts against the CURRENT manifest. The
+    # emitted set is authoritative for pages; any PR page on disk whose id is not
+    # emitted this run is stale — whether it flipped include->skip OR its manifest
+    # entry was deleted entirely (Codex R8). The full manifest id set is
+    # authoritative for the skip audit: a row for a PR no longer in the seed set
+    # is dropped.
+    emitted_ids = {_page_id(root, dest) for dest, _ in emitted}
+    manifest_ids = {f"pr-{e['repo_slug']}-{e['pr']}" for e in manifest.get("entries", [])}
+    stale_pages = [p for p in _existing_pr_pages(root) if _page_id(root, p) not in emitted_ids]
+
     if args.dry_run:
         for dest, _ in emitted:
             print(f"  would write {dest.relative_to(root)}")
+        for stale in stale_pages:
+            print(f"  would REMOVE stale page {stale.relative_to(root)}")
         for row in skipped:
-            stale = row["_page_path"]
-            if stale.is_file():
-                print(f"  would REMOVE stale page {stale.relative_to(root)} (now {row['reason']})")
             print(f"  would skip-log {row['pr_id']} ({row['reason']})")
-        print(f"Dry run: {len(emitted)} page(s), {len(skipped)} skip(s).")
+        print(f"Dry run: {len(emitted)} page(s), {len(stale_pages)} stale removal(s), "
+              f"{len(skipped)} skip(s).")
         return
 
     for dest, page in emitted:
@@ -208,35 +229,30 @@ def main():
         dest.write_text(page, encoding="utf-8")
         print(f"  wrote {dest.relative_to(root)}")
 
-    # A skip verdict must not leave a previously-generated page on disk: a PR
-    # cannot be both an included page and a skip-log entry. Remove any stale page
-    # for each skipped entry (and prune a now-empty repo dir).
-    for row in skipped:
-        stale = row.pop("_page_path")
-        if stale.is_file():
-            stale.unlink()
-            print(f"  removed stale page {stale.relative_to(root)} (now {row['reason']})")
-            try:
-                stale.parent.rmdir()  # only succeeds if now empty
-            except OSError:
-                pass
+    # Delete every stale page (include->skip flips AND deleted manifest entries),
+    # pruning a now-empty repo dir. A PR cannot be both an included page and
+    # absent/skipped in the current manifest.
+    for stale in stale_pages:
+        stale.unlink()
+        print(f"  removed stale page {stale.relative_to(root)}")
+        try:
+            stale.parent.rmdir()  # only succeeds if now empty
+        except OSError:
+            pass
 
     # Merge skip rows into data/pr-page-skipped.yaml (sorted, deterministic).
-    # A PR emitted as a page this run must NOT remain in the skip audit (it
-    # cannot be both a page and a skip), so drop any stale row for an emitted id
-    # before merging the fresh skips.
-    emitted_ids = set()
-    for dest, _ in emitted:
-        slug, fname = dest.relative_to(root).parts[-2:]  # sources/prs/<slug>/PR-<N>.md
-        emitted_ids.add(f"pr-{slug}-{fname[len('PR-'):-len('.md')]}")
-
+    # Keep an existing row ONLY if its PR is still in the current manifest AND is
+    # not emitted as a page this run: a PR emitted this run cannot also be a skip,
+    # and a PR no longer in the seed set must not linger in the audit (Codex R8).
     skip_path = root / "data" / "pr-page-skipped.yaml"
     existing_rows = []
     if skip_path.is_file():
         prior = yaml.safe_load(skip_path.read_text(encoding="utf-8")) or {}
         existing_rows = prior.get("rows", []) or []
     by_id = {r.get("pr_id"): r for r in existing_rows
-             if isinstance(r, dict) and r.get("pr_id") not in emitted_ids}
+             if isinstance(r, dict)
+             and r.get("pr_id") in manifest_ids
+             and r.get("pr_id") not in emitted_ids}
     for row in skipped:
         by_id[row["pr_id"]] = row
     rows = sorted(by_id.values(), key=lambda r: (r.get("repo", ""), r.get("pr_number", 0)))

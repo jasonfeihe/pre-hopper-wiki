@@ -394,6 +394,55 @@ class GeneratorTests(unittest.TestCase):
             self.assertFalse(page.exists(), "skip must remove the stale include page")
             self.assertEqual(run_script("validate.py", "--root", str(kb)).returncode, 0)
 
+    def test_deleted_manifest_entry_removes_generated_page(self):
+        # R8 regression: removing a seed entry entirely must delete its previously
+        # generated page, so regeneration is a faithful rebuild from the manifest.
+        with tempfile.TemporaryDirectory() as d:
+            kb = _clone_kb(Path(d))
+            page = kb / "sources" / "prs" / "flashinfer" / "PR-385.md"
+            self.assertTrue(page.exists(), "committed seed page should be present")
+            manifest = kb / "tests" / "fixtures" / "seed" / "seed-manifest.yaml"
+            data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+            data["entries"] = [e for e in data["entries"]
+                               if not (e["repo_slug"] == "flashinfer" and e["pr"] == 385)]
+            manifest.write_text(yaml.safe_dump(data), encoding="utf-8")
+            self.assertEqual(run_script("generate-pr-pages.py", "--root", str(kb)).returncode, 0)
+            self.assertFalse(page.exists(), "deleted manifest entry must remove its page")
+            # Other pages survive; repo still validates.
+            self.assertTrue((kb / "sources" / "prs" / "flashinfer" / "PR-1973.md").exists())
+            self.assertEqual(run_script("validate.py", "--root", str(kb)).returncode, 0)
+
+    def test_deleted_skip_only_entry_drops_audit_row(self):
+        # R8 regression: a skip-only seed entry, once removed from the manifest,
+        # must not linger in data/pr-page-skipped.yaml.
+        with tempfile.TemporaryDirectory() as d:
+            kb = _clone_kb(Path(d))
+            fx = kb / "tests" / "fixtures" / "seed" / "cutlass"
+            fx.mkdir(parents=True, exist_ok=True)
+            (fx / "PR-9002.json").write_text(json.dumps({
+                "number": 9002, "title": "sm90 H100 wgmma only", "changed_paths": ["a.cu"],
+            }), encoding="utf-8")
+            manifest = kb / "tests" / "fixtures" / "seed" / "seed-manifest.yaml"
+            data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+            entry = {
+                "repo_slug": "cutlass", "repo": "NVIDIA/cutlass", "pr": 9002,
+                "title": "sm90 H100 wgmma only", "author": "x", "date": "2025-01-01",
+                "url": "https://example.com/9002", "status": "merged", "merge_sha": "abc123",
+                "fixture": "tests/fixtures/seed/cutlass/PR-9002.json", "tags": [],
+            }
+            data["entries"].append(entry)
+            manifest.write_text(yaml.safe_dump(data), encoding="utf-8")
+            self.assertEqual(run_script("generate-pr-pages.py", "--root", str(kb)).returncode, 0)
+            skip = yaml.safe_load((kb / "data" / "pr-page-skipped.yaml").read_text(encoding="utf-8"))
+            self.assertIn("pr-cutlass-9002", {r["pr_id"] for r in skip["rows"]})
+            # Remove the entry and regenerate -> its audit row must be gone.
+            data["entries"] = [e for e in data["entries"] if e["pr"] != 9002]
+            manifest.write_text(yaml.safe_dump(data), encoding="utf-8")
+            self.assertEqual(run_script("generate-pr-pages.py", "--root", str(kb)).returncode, 0)
+            skip = yaml.safe_load((kb / "data" / "pr-page-skipped.yaml").read_text(encoding="utf-8"))
+            self.assertNotIn("pr-cutlass-9002", {r["pr_id"] for r in skip["rows"]})
+            self.assertEqual(run_script("validate.py", "--root", str(kb)).returncode, 0)
+
 
     """fixture-mode discovery, no network, idempotent, atomic."""
 

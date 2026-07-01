@@ -125,11 +125,16 @@ def live_candidates(full_repo: str, keywords: list[str], since: str, until: str)
     import subprocess
 
     seen: dict[int, dict] = {}
+    # GitHub search returns at most 1000 results per query (gh paginates internally
+    # up to that cap). Ask for the full 1000 rather than the default 100, and WARN
+    # when a keyword saturates the cap so missing candidates are surfaced for
+    # triage instead of being silently dropped (Codex R10).
+    search_cap = 1000
     for kw in keywords:
         cmd = [
             "gh", "search", "prs", "--repo", full_repo, "--merged",
             "--created", f"{since}..{until}", kw,
-            "--limit", "100", "--json", "number,title,createdAt",
+            "--limit", str(search_cap), "--json", "number,title,createdAt",
         ]
         try:
             res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
@@ -139,7 +144,12 @@ def live_candidates(full_repo: str, keywords: list[str], since: str, until: str)
         if res.returncode != 0:
             print(f"  WARN: gh non-zero for {full_repo} [{kw}]: {res.stderr.strip()}", file=sys.stderr)
             continue
-        for item in json.loads(res.stdout or "[]"):
+        items = json.loads(res.stdout or "[]")
+        if len(items) >= search_cap:
+            print(f"  WARN: {full_repo} [{kw}] hit the {search_cap}-result search cap; "
+                  f"some merged PRs in {since}..{until} may be missing — narrow the "
+                  f"window/keyword and re-run to triage them.", file=sys.stderr)
+        for item in items:
             n = item["number"]
             seen.setdefault(n, {
                 "number": n,

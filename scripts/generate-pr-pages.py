@@ -38,6 +38,12 @@ from classify_candidate import classify, load_policy  # noqa: E402
 
 DEFAULT_MANIFEST = "tests/fixtures/seed/seed-manifest.yaml"
 
+# Provenance marker written into every generated page's frontmatter. Only pages
+# carrying this marker are considered generator-owned and thus eligible for stale
+# removal; hand-authored source-pr pages (added via the append-only workflow in
+# references/incremental-updates.md) have no marker and are never deleted.
+GENERATED_BY = "generate-pr-pages"
+
 
 def _vocab(root: Path, key: str) -> set:
     data = yaml.safe_load((root / "data" / "tags.yaml").read_text(encoding="utf-8")) or {}
@@ -64,11 +70,33 @@ def _page_id(root: Path, page: Path) -> str:
     return f"pr-{slug}-{fname[len('PR-'):-len('.md')]}"
 
 
-def _existing_pr_pages(root: Path) -> list[Path]:
-    """Every generated PR page currently on disk. The generator OWNS this tree,
-    so any page whose id is not produced by the current manifest is stale."""
+def _is_generated_page(page: Path) -> bool:
+    """True iff the page's frontmatter carries our provenance marker. Only such
+    pages are generator-owned; hand-authored source-pr pages (append-only
+    workflow) have no marker and must never be treated as stale."""
+    try:
+        text = page.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    if not text.startswith("---"):
+        return False
+    end = text.find("\n---", 3)
+    front = text[3:end] if end != -1 else text
+    try:
+        fm = yaml.safe_load(front) or {}
+    except yaml.YAMLError:
+        return False
+    return isinstance(fm, dict) and fm.get("generated_by") == GENERATED_BY
+
+
+def _generated_pr_pages(root: Path) -> list[Path]:
+    """Every generator-OWNED PR page currently on disk (i.e. carrying the
+    provenance marker). Pages without the marker are hand-authored and excluded,
+    so a regeneration never deletes append-only content."""
     base = root / "sources" / "prs"
-    return sorted(base.rglob("PR-*.md")) if base.is_dir() else []
+    if not base.is_dir():
+        return []
+    return sorted(p for p in base.rglob("PR-*.md") if _is_generated_page(p))
 
 
 def _evidence_sentence(evidence: list[dict]) -> str:
@@ -104,6 +132,9 @@ def render_page(entry: dict, verdict: dict, captured_at: str) -> str:
     fm["inclusion_reason"] = _evidence_sentence(verdict["architecture_evidence"])
     if entry.get("description"):
         fm["description"] = entry["description"]
+    # Provenance: marks this page as generator-owned so stale cleanup can target
+    # only pages this script produced (never hand-authored ones).
+    fm["generated_by"] = GENERATED_BY
 
     front = yaml.safe_dump(fm, sort_keys=False, allow_unicode=True, default_flow_style=False)
     body = entry.get("summary", f"Summary of {entry['repo']} PR #{num}: {entry['title']}.")
@@ -204,14 +235,15 @@ def main():
         sys.exit(1)
 
     # Reconcile the generator-owned artifacts against the CURRENT manifest. The
-    # emitted set is authoritative for pages; any PR page on disk whose id is not
-    # emitted this run is stale — whether it flipped include->skip OR its manifest
-    # entry was deleted entirely (Codex R8). The full manifest id set is
-    # authoritative for the skip audit: a row for a PR no longer in the seed set
-    # is dropped.
+    # emitted set is authoritative for pages; any GENERATOR-OWNED page (carrying
+    # the provenance marker) whose id is not emitted this run is stale — whether
+    # it flipped include->skip OR its manifest entry was deleted entirely (Codex
+    # R8). Hand-authored pages without the marker are never swept (Codex R10). The
+    # full manifest id set is authoritative for the skip audit: a row for a PR no
+    # longer in the seed set is dropped.
     emitted_ids = {_page_id(root, dest) for dest, _ in emitted}
     manifest_ids = {f"pr-{e['repo_slug']}-{e['pr']}" for e in manifest.get("entries", [])}
-    stale_pages = [p for p in _existing_pr_pages(root) if _page_id(root, p) not in emitted_ids]
+    stale_pages = [p for p in _generated_pr_pages(root) if _page_id(root, p) not in emitted_ids]
 
     if args.dry_run:
         for dest, _ in emitted:

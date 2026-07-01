@@ -68,6 +68,7 @@ source-pr:
     - kernel_types
     - languages
     - scope_relevance
+    - generated_by
   constraints:
     id_prefix: pr-
     source_category: upstream-code

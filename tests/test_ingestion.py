@@ -443,6 +443,41 @@ class GeneratorTests(unittest.TestCase):
             self.assertNotIn("pr-cutlass-9002", {r["pr_id"] for r in skip["rows"]})
             self.assertEqual(run_script("validate.py", "--root", str(kb)).returncode, 0)
 
+    def test_generated_pages_carry_provenance_marker(self):
+        # R10: every generated seed page must carry the generated_by marker so the
+        # stale sweep can distinguish generator-owned pages from hand-authored ones.
+        for name in ("vllm/PR-29901.md", "flashinfer/PR-385.md", "flashinfer/PR-1973.md"):
+            page = (REPO / "sources" / "prs" / name).read_text(encoding="utf-8")
+            self.assertIn("generated_by: generate-pr-pages", page, f"{name} missing provenance marker")
+
+    def test_hand_authored_page_survives_regeneration(self):
+        # R10 regression: a hand-authored source-pr page (append-only workflow, NO
+        # provenance marker) must NOT be deleted by a regeneration, while a
+        # generator-owned page dropped from the manifest still is.
+        with tempfile.TemporaryDirectory() as d:
+            kb = _clone_kb(Path(d))
+            hand = kb / "sources" / "prs" / "pytorch" / "PR-555.md"
+            hand.parent.mkdir(parents=True, exist_ok=True)
+            hand.write_text(
+                "---\nid: pr-pytorch-555\nrepo: pytorch/pytorch\npr: 555\n"
+                "title: Hand-authored sm86 page\nauthor: someone\ndate: '2024-03-03'\n"
+                "url: https://github.com/pytorch/pytorch/pull/555\n"
+                "source_category: upstream-code\narchitectures: [sm86]\ntags: [sm86]\n"
+                "captured_at: '2026-06-30'\nstatus: merged\nmerge_sha: deadbeef\n---\n\n"
+                "# Hand-authored sm86 page\n\nAdded via the append-only workflow.\n",
+                encoding="utf-8")
+            # Also drop a generator-owned entry (flashinfer#385) from the manifest.
+            manifest = kb / "tests" / "fixtures" / "seed" / "seed-manifest.yaml"
+            data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+            data["entries"] = [e for e in data["entries"]
+                               if not (e["repo_slug"] == "flashinfer" and e["pr"] == 385)]
+            manifest.write_text(yaml.safe_dump(data), encoding="utf-8")
+            self.assertEqual(run_script("generate-pr-pages.py", "--root", str(kb)).returncode, 0)
+            self.assertTrue(hand.exists(), "hand-authored page (no marker) must survive")
+            self.assertFalse((kb / "sources" / "prs" / "flashinfer" / "PR-385.md").exists(),
+                             "generator-owned page dropped from manifest must still be removed")
+            self.assertEqual(run_script("validate.py", "--root", str(kb)).returncode, 0)
+
 
     """fixture-mode discovery, no network, idempotent, atomic."""
 

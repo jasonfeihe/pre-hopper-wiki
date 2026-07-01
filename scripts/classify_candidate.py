@@ -287,8 +287,12 @@ def classify(candidate: dict, policy: dict, in_scope_archs: set[str] | None = No
     # because host-side PRs routinely say "kernel scheduler"/"kernel launcher"
     # without touching device code (Codex R6). Absence of paths is not a pass —
     # the text must then carry a device signal (closes the empty-paths bypass).
+    # The list is device-SPECIFIC: neither the generic word "kernel" nor the
+    # library name "cutlass" is a signal, because host-side dispatch/plumbing code
+    # routinely names CUTLASS without adding any device code (Codex R7). Only
+    # device files (.cu/.cuh/.ptx) and device constructs qualify a .cpp/.h path.
     kernel_text_signals = ("__cuda_arch__", "mma.sync", "ldmatrix", "cp.async",
-                           "wmma", ".cu", ".cuh", ".ptx", "cutlass", "__global__",
+                           "wmma", ".cu", ".cuh", ".ptx", "__global__",
                            "__device__", "tensor core", "tensor-core", "warp-level")
     has_kernel_text = any(s in haystack for s in kernel_text_signals)
     has_device_path = bool(kernel_exts) and any(p.endswith(kernel_exts) for p in paths)

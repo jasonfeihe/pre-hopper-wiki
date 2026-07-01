@@ -146,6 +146,24 @@ class ClassifierTests(unittest.TestCase):
         self.assertEqual(v["decision"], "include")
         self.assertEqual(v["architectures"], ["sm86"])
 
+    def test_cutlass_word_does_not_rescue_host_cpp(self):
+        # R7 regression: the library name "cutlass" is NOT device evidence, so a
+        # host-only .cpp that names CUTLASS + an in-scope arch must skip.
+        v = self._verdict({"title": "sm89 cutlass plumbing",
+                           "body": "Host-side CUTLASS dispatch wiring only.",
+                           "changed_paths": ["src/dispatch.cpp"]})
+        self.assertEqual(v["decision"], "skip")
+        self.assertEqual(v["reason"], "non-kernel")
+
+    def test_cutlass_device_file_still_includes(self):
+        # A real CUTLASS .cu device file with a clean in-scope arch still includes
+        # (the fix removes only the TEXT signal, not device-path evidence).
+        v = self._verdict({"title": "sm89 cutlass gemm",
+                           "body": "add cutlass fp8 path",
+                           "changed_paths": ["csrc/gemm_sm89.cu"]})
+        self.assertEqual(v["decision"], "include")
+        self.assertEqual(v["architectures"], ["sm89"])
+
     def test_empty_paths_no_kernel_text_is_not_kernel(self):
         v = self._verdict({"title": "optimize for sm89"})
         self.assertEqual(v["decision"], "skip")
@@ -472,6 +490,53 @@ class GeneratorTests(unittest.TestCase):
             cut = next(e for e in rsr["repos"] if e["repo_slug"] == "cutlass")
             self.assertEqual(cut["pr_numbers_seen"], [200])
             self.assertEqual(cut["last_pr_date_seen"], "2024-01-01")
+
+    def test_refresh_tighter_window_drops_stale_rows(self):
+        # R7 regression: re-refreshing with a TIGHTER window must drop existing
+        # rows that fall outside it, so ledger rows stay consistent with the
+        # rewritten window_start.
+        with tempfile.TemporaryDirectory() as d:
+            kb = _clone_kb(Path(d))
+            (kb / "candidates" / "cutlass.yaml").write_text(
+                "repo: NVIDIA/cutlass\nsearched_at: '2026-06-30'\nwindow_start: '2020-01-01'\n"
+                "keywords_used: [sm75]\ntotal_candidates: 0\nincluded: 0\nexcluded: 0\n"
+                "deferred: 0\nneeds_review: 0\nprs: []\n", encoding="utf-8")
+            (kb / "tests" / "fixtures" / "gh" / "cutlass.json").write_text(json.dumps([
+                {"number": 1989, "title": "old", "createdAt": "2023-08-01T00:00:00Z"},
+                {"number": 2200, "title": "newer", "createdAt": "2024-06-01T00:00:00Z"},
+            ]), encoding="utf-8")
+            # Broad window: both merge.
+            run_script("refresh_candidate_ledger.py", "--root", str(kb), "--repos", "cutlass",
+                       "--since", "2020-01-01", "--until", "2026-06-30", "--searched-at", "2026-06-30")
+            broad = yaml.safe_load((kb / "candidates" / "cutlass.yaml").read_text(encoding="utf-8"))
+            self.assertEqual(sorted(x["number"] for x in broad["prs"]), [1989, 2200])
+            # Tighter window: the 2023 row must be dropped.
+            run_script("refresh_candidate_ledger.py", "--root", str(kb), "--repos", "cutlass",
+                       "--since", "2024-01-01", "--until", "2026-06-30", "--searched-at", "2026-06-30")
+            tight = yaml.safe_load((kb / "candidates" / "cutlass.yaml").read_text(encoding="utf-8"))
+            self.assertEqual(sorted(x["number"] for x in tight["prs"]), [2200])
+            self.assertEqual(tight["window_start"], "2024-01-01")
+            self.assertEqual(tight["total_candidates"], 1)
+
+    def test_refresh_advances_cutoff_monotonically(self):
+        # R7 regression: a newer --searched-at advances refresh-cutoff.yaml; an
+        # equal/older date leaves it byte-identical (never moves backward).
+        with tempfile.TemporaryDirectory() as d:
+            kb = _clone_kb(Path(d))
+            rc = kb / "data" / "refresh-cutoff.yaml"
+            self.assertEqual(yaml.safe_load(rc.read_text(encoding="utf-8"))["cutoff_date"], "2026-06-30")
+            # Newer date -> advance, notes preserved, header comment preserved.
+            run_script("refresh_candidate_ledger.py", "--root", str(kb),
+                       "--repos", "cutlass", "--searched-at", "2026-07-01")
+            after = rc.read_text(encoding="utf-8")
+            data = yaml.safe_load(after)
+            self.assertEqual(data["cutoff_date"], "2026-07-01")
+            self.assertTrue(data.get("notes"), "notes must be preserved")
+            self.assertTrue(after.lstrip().startswith("#"), "header comment must be preserved")
+            # Older date -> no backward move, byte-identical.
+            run_script("refresh_candidate_ledger.py", "--root", str(kb),
+                       "--repos", "cutlass", "--searched-at", "2026-06-30")
+            self.assertEqual(rc.read_text(encoding="utf-8"), after, "must not move cutoff backward")
 
     def test_refresh_rejects_undated_candidate(self):
         # A malformed fixture row without a valid date is a hard error, not a

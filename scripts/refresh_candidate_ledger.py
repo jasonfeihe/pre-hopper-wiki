@@ -150,9 +150,16 @@ def live_candidates(full_repo: str, keywords: list[str], since: str, until: str)
 
 
 def merge_into_ledger(ledger: dict, candidates: list[dict], repo_full: str,
-                      slug: str, searched_at: str, since: str, keywords: list[str]) -> dict:
+                      slug: str, searched_at: str, since: str, until: str,
+                      keywords: list[str]) -> dict:
     """Additively merge candidates into a ledger. New PRs -> decision: defer.
-    Existing rows are preserved verbatim (decisions never rewritten)."""
+    Existing rows are preserved verbatim (decisions never rewritten), EXCEPT that
+    any row carrying a valid date outside the advertised [since, until] window is
+    dropped: the ledger header is rewritten to this window, so a re-refresh with a
+    tighter window must not leave rows the header no longer covers (Codex R7). A
+    row with a missing/unparseable date is kept — hand-authored rows may predate
+    date-stamping, and silently discarding a curated decision would be worse than
+    an out-of-window row we cannot place."""
     existing = {r["number"]: r for r in ledger.get("prs", []) if isinstance(r, dict)}
     for cand in candidates:
         n = cand["number"]
@@ -165,7 +172,15 @@ def merge_into_ledger(ledger: dict, candidates: list[dict], repo_full: str,
             "decision": "defer",
             "reason": "surfaced by discovery refresh; needs triage",
         }
-    rows = sorted(existing.values(), key=lambda r: r["number"], reverse=True)
+
+    def _in_window(row: dict) -> bool:
+        d = str(row.get("date") or "")
+        if not _ISO_DATE.match(d):
+            return True  # undated hand-authored row: keep (can't place it)
+        return since <= d <= until
+
+    rows = sorted((r for r in existing.values() if _in_window(r)),
+                  key=lambda r: r["number"], reverse=True)
     tally = {"include": 0, "exclude": 0, "defer": 0, "needs-review": 0}
     for r in rows:
         if r.get("decision") in tally:
@@ -236,7 +251,7 @@ def main():
         ledger = {}
         if ledger_path.is_file():
             ledger = yaml.safe_load(ledger_path.read_text(encoding="utf-8")) or {}
-        merged = merge_into_ledger(ledger, cands, full, slug, searched_at, args.since, DEFAULT_KEYWORDS)
+        merged = merge_into_ledger(ledger, cands, full, slug, searched_at, args.since, until, DEFAULT_KEYWORDS)
         atomic_write(ledger_path, dump_yaml(merged))
         print(f"  {slug}: {len(cands)} candidate(s) seen, ledger now {merged['total_candidates']} row(s)")
 
@@ -270,6 +285,40 @@ def main():
     )
     print(f"Wrote refresh-search-results.yaml for {len(merged_repos)} repo(s) "
           f"({len(repos_results)} refreshed this run).")
+
+    # Advance the incremental-update baseline so a later default refresh does not
+    # silently fall back to an older cutoff (Codex R7). MONOTONIC: only move the
+    # date forward, never backward; an unchanged/older searched_at leaves the file
+    # byte-identical (no spurious diff). The leading comment block and `notes` are
+    # preserved.
+    _advance_cutoff(root, searched_at)
+
+
+def _advance_cutoff(root: Path, searched_at: str) -> None:
+    rc_path = root / "data" / "refresh-cutoff.yaml"
+    if not rc_path.is_file():
+        return
+    raw = rc_path.read_text(encoding="utf-8")
+    data = yaml.safe_load(raw) or {}
+    current = str(data.get("cutoff_date") or "")
+    if not (_ISO_DATE.match(searched_at) and searched_at > current):
+        return  # not strictly newer -> leave the file untouched (byte-identical)
+    # Preserve the leading comment block (contiguous top-of-file lines starting
+    # with '#') so the human-facing header/semantics survive the rewrite.
+    header_lines = []
+    for line in raw.splitlines():
+        if line.startswith("#"):
+            header_lines.append(line)
+        elif line.strip() == "" and header_lines:
+            header_lines.append(line)
+        else:
+            break
+    header = ("\n".join(header_lines) + "\n") if header_lines else ""
+    body = {"cutoff_date": searched_at}
+    if data.get("notes"):
+        body["notes"] = data["notes"]
+    atomic_write(rc_path, header + dump_yaml(body))
+    print(f"Advanced refresh-cutoff.yaml: {current or '(none)'} -> {searched_at}")
 
 
 if __name__ == "__main__":

@@ -273,6 +273,17 @@ def main():
             "last_pr_date_seen": max((c["date"] for c in cands), default=""),
         })
 
+    # No tracked repo was refreshed (e.g. --repos resolved to only unknown slugs):
+    # this is a no-op, and persisting a new cutoff_date / advancing the baseline
+    # would record a fictitious review round the corpus never had (Codex R13).
+    # Abort non-zero and leave both artifacts untouched.
+    if not repos_results:
+        print(f"ERROR: no tracked repo was refreshed (requested {slugs!r}); "
+              f"tracked repos are {sorted(TRACKED_REPOS)}. Leaving "
+              f"refresh-search-results.yaml and refresh-cutoff.yaml untouched.",
+              file=sys.stderr)
+        sys.exit(2)
+
     # Preserve entries for repos NOT touched by this (possibly subset) refresh: a
     # targeted `--repos cutlass,flashinfer` run must not erase the other tracked
     # repos from the artifact, which is expected to cover the full tracked set

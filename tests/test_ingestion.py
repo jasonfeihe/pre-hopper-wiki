@@ -711,6 +711,34 @@ class GeneratorTests(unittest.TestCase):
                        "--repos", "cutlass", "--searched-at", "2026-06-30")
             self.assertEqual(rc.read_text(encoding="utf-8"), after, "must not move cutoff backward")
 
+    def test_refresh_all_unknown_repos_is_noop_and_nonzero(self):
+        # R13 regression: --repos resolving to only unknown slugs is a no-op — it
+        # must NOT record a fictitious review round (rewrite refresh-search-results
+        # / advance refresh-cutoff), and must exit non-zero.
+        with tempfile.TemporaryDirectory() as d:
+            kb = _clone_kb(Path(d))
+            rsr = kb / "data" / "refresh-search-results.yaml"
+            rc = kb / "data" / "refresh-cutoff.yaml"
+            rsr_before = rsr.read_text(encoding="utf-8")
+            rc_before = rc.read_text(encoding="utf-8")
+            # A future --searched-at that WOULD advance the cutoff if it ran.
+            r = run_script("refresh_candidate_ledger.py", "--root", str(kb),
+                           "--repos", "typo", "--searched-at", "2026-07-15")
+            self.assertNotEqual(r.returncode, 0, "all-unknown --repos must exit non-zero")
+            self.assertEqual(rsr.read_text(encoding="utf-8"), rsr_before,
+                             "refresh-search-results.yaml must be untouched on a no-op refresh")
+            self.assertEqual(rc.read_text(encoding="utf-8"), rc_before,
+                             "refresh-cutoff.yaml must be untouched on a no-op refresh")
+
+    def test_refresh_mixed_known_unknown_repos_still_writes(self):
+        # R13: a mix of tracked + unknown slugs still refreshes the tracked one
+        # (the no-op guard only fires when NOTHING tracked was refreshed).
+        with tempfile.TemporaryDirectory() as d:
+            kb = _clone_kb(Path(d))
+            r = run_script("refresh_candidate_ledger.py", "--root", str(kb),
+                           "--repos", "cutlass,typo", "--searched-at", "2026-06-30")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_refresh_rejects_undated_candidate(self):
         # A malformed fixture row without a valid date is a hard error, not a
         # silent leak.

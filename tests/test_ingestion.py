@@ -513,6 +513,21 @@ class GeneratorTests(unittest.TestCase):
             self.assertEqual(r.returncode, 1)
             self.assertIn("missing required field 'searched_at'", r.stdout)
 
+    def test_refresh_result_malformed_pr_numbers_seen_is_error_not_crash(self):
+        # R9 regression: a scalar pr_numbers_seen must be a validation error, not a
+        # TypeError at sorted() that crashes the validation-gated tooling.
+        with tempfile.TemporaryDirectory() as d:
+            kb = _clone_kb(Path(d))
+            (kb / "data" / "refresh-search-results.yaml").write_text(
+                "cutoff_date: '2026-06-30'\nrepos:\n- repo_slug: cutlass\n"
+                "  searched_at: '2026-06-30'\n  window_start: '2020-01-01'\n"
+                "  last_pr_date_seen: ''\n  pr_numbers_seen: 1\n",  # scalar, not a list
+                encoding="utf-8")
+            r = run_script("validate.py", "--root", str(kb))
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("pr_numbers_seen must be a list", r.stdout)
+            self.assertNotIn("Traceback", r.stderr)
+
     def test_refresh_honors_discovery_window(self):
         # Out-of-window PRs (before --since or after --until) must be dropped in
         # fixture mode, not merged into the ledger or refresh results.

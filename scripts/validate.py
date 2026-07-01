@@ -648,7 +648,18 @@ class Validator:
                         f"data/refresh-search-results.yaml: repo '{slug}' "
                         f"missing required field '{field}'"
                     )
-            seen = entry.get("pr_numbers_seen") or []
+            seen = entry.get("pr_numbers_seen")
+            if seen is None:
+                seen = []
+            elif not isinstance(seen, list):
+                # A malformed scalar (e.g. `pr_numbers_seen: 1`) must yield a
+                # validation error, not a TypeError at sorted(): the validator
+                # gates every entry-point script and must never crash on bad input.
+                self.err(
+                    f"data/refresh-search-results.yaml: repo '{slug}' "
+                    f"pr_numbers_seen must be a list"
+                )
+                seen = []
             if seen != sorted(seen):
                 self.err(
                     f"data/refresh-search-results.yaml: repo '{slug}' "
@@ -666,8 +677,10 @@ class Validator:
                 ledger = load_yaml(ledger_path) or {}
             except yaml.YAMLError:
                 continue  # ledger parse error already reported by validate_candidate_ledgers
-            ledger_numbers = {r.get("number") for r in (ledger.get("prs") or [])
-                              if isinstance(r, dict)}
+            ledger_prs = ledger.get("prs")
+            if not isinstance(ledger_prs, list):
+                ledger_prs = []  # shape error already reported by validate_candidate_ledgers
+            ledger_numbers = {r.get("number") for r in ledger_prs if isinstance(r, dict)}
             for n in seen:
                 if n not in ledger_numbers:
                     self.err(

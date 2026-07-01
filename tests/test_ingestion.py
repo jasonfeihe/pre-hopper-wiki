@@ -478,6 +478,50 @@ class GeneratorTests(unittest.TestCase):
                              "generator-owned page dropped from manifest must still be removed")
             self.assertEqual(run_script("validate.py", "--root", str(kb)).returncode, 0)
 
+    def test_partial_custom_manifest_preserves_out_of_scope_pages(self):
+        # R11 regression: a PARTIAL custom --manifest is authoritative only for the
+        # ids it declares. Regenerating one repo must NOT delete unrelated
+        # generator-owned pages, but must still reconcile the entries it declares.
+        with tempfile.TemporaryDirectory() as d:
+            kb = _clone_kb(Path(d))
+            full = yaml.safe_load(
+                (kb / "tests" / "fixtures" / "seed" / "seed-manifest.yaml").read_text(encoding="utf-8"))
+            one = {"captured_at": full.get("captured_at", "2026-06-30"),
+                   "entries": [e for e in full["entries"] if e["repo_slug"] == "vllm"]}
+            custom = kb / "one-entry-manifest.yaml"
+            custom.write_text(yaml.safe_dump(one), encoding="utf-8")
+            r = run_script("generate-pr-pages.py", "--root", str(kb), "--manifest", str(custom))
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            # Unrelated pages (not in this manifest) survive.
+            self.assertTrue((kb / "sources" / "prs" / "flashinfer" / "PR-385.md").exists())
+            self.assertTrue((kb / "sources" / "prs" / "flashinfer" / "PR-1973.md").exists())
+            # The declared entry is (re)generated.
+            self.assertTrue((kb / "sources" / "prs" / "vllm" / "PR-29901.md").exists())
+            self.assertEqual(run_script("validate.py", "--root", str(kb)).returncode, 0)
+
+    def test_partial_manifest_still_reconciles_its_own_include_to_skip(self):
+        # R11: a partial manifest still removes a page for one of ITS OWN entries
+        # when that entry flips include->skip (scoped reconciliation, not disabled).
+        with tempfile.TemporaryDirectory() as d:
+            kb = _clone_kb(Path(d))
+            full = yaml.safe_load(
+                (kb / "tests" / "fixtures" / "seed" / "seed-manifest.yaml").read_text(encoding="utf-8"))
+            e1973 = next(e for e in full["entries"] if e["pr"] == 1973)
+            # Flip its fixture to hopper-only so it now classifies as skip.
+            (kb / e1973["fixture"]).write_text(json.dumps({
+                "number": 1973, "title": "sm90 H100 wgmma only", "changed_paths": ["a.cu"],
+            }), encoding="utf-8")
+            one = {"captured_at": full.get("captured_at", "2026-06-30"), "entries": [e1973]}
+            custom = kb / "one.yaml"
+            custom.write_text(yaml.safe_dump(one), encoding="utf-8")
+            r = run_script("generate-pr-pages.py", "--root", str(kb), "--manifest", str(custom))
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertFalse((kb / "sources" / "prs" / "flashinfer" / "PR-1973.md").exists(),
+                             "an include->skip flip in the partial manifest must remove its own page")
+            # An unrelated page still survives.
+            self.assertTrue((kb / "sources" / "prs" / "vllm" / "PR-29901.md").exists())
+            self.assertEqual(run_script("validate.py", "--root", str(kb)).returncode, 0)
+
 
     """fixture-mode discovery, no network, idempotent, atomic."""
 

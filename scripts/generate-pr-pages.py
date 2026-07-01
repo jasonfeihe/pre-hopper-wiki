@@ -183,6 +183,11 @@ def main():
 
     root = Path(args.root).expanduser().resolve() if args.root else _DEFAULT_ROOT
     manifest_path = Path(args.manifest) if args.manifest else root / DEFAULT_MANIFEST
+    # A custom --manifest is a PARTIAL run: it is authoritative only for the ids it
+    # declares, so reconciliation must not delete pages/skip-rows outside it (Codex
+    # R11). The default committed manifest is a FULL rebuild of the whole
+    # generator-owned corpus (keeps the R8 deleted-entry cleanup).
+    partial = bool(args.manifest)
     if not manifest_path.is_file():
         print(f"ERROR: manifest not found: {manifest_path}", file=sys.stderr)
         sys.exit(2)
@@ -235,15 +240,24 @@ def main():
         sys.exit(1)
 
     # Reconcile the generator-owned artifacts against the CURRENT manifest. The
-    # emitted set is authoritative for pages; any GENERATOR-OWNED page (carrying
-    # the provenance marker) whose id is not emitted this run is stale — whether
-    # it flipped include->skip OR its manifest entry was deleted entirely (Codex
-    # R8). Hand-authored pages without the marker are never swept (Codex R10). The
-    # full manifest id set is authoritative for the skip audit: a row for a PR no
-    # longer in the seed set is dropped.
+    # emitted set is authoritative for pages; a GENERATOR-OWNED page (carrying the
+    # provenance marker) whose id is not emitted this run is stale — whether it
+    # flipped include->skip OR its manifest entry was deleted entirely (Codex R8).
+    # Hand-authored pages without the marker are never swept (Codex R10). For a
+    # PARTIAL run (custom --manifest) the manifest is authoritative ONLY for the
+    # ids it declares, so a stale page must ALSO be one this manifest declares —
+    # otherwise regenerating one repo would delete unrelated pages (Codex R11).
     emitted_ids = {_page_id(root, dest) for dest, _ in emitted}
     manifest_ids = {f"pr-{e['repo_slug']}-{e['pr']}" for e in manifest.get("entries", [])}
-    stale_pages = [p for p in _generated_pr_pages(root) if _page_id(root, p) not in emitted_ids]
+
+    def _is_stale(page: Path) -> bool:
+        pid = _page_id(root, page)
+        if pid in emitted_ids:
+            return False
+        # Partial run: only reconcile pages the active manifest is responsible for.
+        return pid in manifest_ids if partial else True
+
+    stale_pages = [p for p in _generated_pr_pages(root) if _is_stale(p)]
 
     if args.dry_run:
         for dest, _ in emitted:
@@ -273,18 +287,27 @@ def main():
             pass
 
     # Merge skip rows into data/pr-page-skipped.yaml (sorted, deterministic).
-    # Keep an existing row ONLY if its PR is still in the current manifest AND is
-    # not emitted as a page this run: a PR emitted this run cannot also be a skip,
-    # and a PR no longer in the seed set must not linger in the audit (Codex R8).
+    # Drop an existing row when a PR emitted this run reclaims its id (a PR cannot
+    # be both a page and a skip). For a FULL rebuild, also drop rows whose id is no
+    # longer in the manifest (Codex R8). For a PARTIAL run, rows for ids OUTSIDE
+    # this manifest are preserved untouched — this manifest is not authoritative
+    # for them (Codex R11).
+    def _keep_existing(pid) -> bool:
+        if pid in emitted_ids:
+            return False  # reclaimed by a page this run
+        if partial:
+            # Only ids this manifest declares are reconciled; keep the rest as-is.
+            # A declared id that is still a skip is re-added fresh by the loop below.
+            return pid not in manifest_ids
+        return pid in manifest_ids  # full rebuild: drop ids no longer in the manifest
+
     skip_path = root / "data" / "pr-page-skipped.yaml"
     existing_rows = []
     if skip_path.is_file():
         prior = yaml.safe_load(skip_path.read_text(encoding="utf-8")) or {}
         existing_rows = prior.get("rows", []) or []
     by_id = {r.get("pr_id"): r for r in existing_rows
-             if isinstance(r, dict)
-             and r.get("pr_id") in manifest_ids
-             and r.get("pr_id") not in emitted_ids}
+             if isinstance(r, dict) and _keep_existing(r.get("pr_id"))}
     for row in skipped:
         by_id[row["pr_id"]] = row
     rows = sorted(by_id.values(), key=lambda r: (r.get("repo", ""), r.get("pr_number", 0)))
